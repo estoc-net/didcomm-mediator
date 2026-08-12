@@ -1,0 +1,18 @@
+services:
+  mediator:
+    build: .
+    image: ghcr.io/estoc-net/didcomm-mediator-ts
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Baked into the mediator's DID on first start; set it before then and
+      # never change it — a new URL would need a new DID (delete the volume).
+      MEDIATOR_PUBLIC_URL: ${MEDIATOR_PUBLIC_URL:?set MEDIATOR_PUBLIC_URL before first start}
+      MEDIATOR_OPEN_REGISTRATION: ${MEDIATOR_OPEN_REGISTRATION:-true}
+      MEDIATOR_CORS_ORIGIN: ${MEDIATOR_CORS_ORIGIN:-*}
+    volumes:
+      - mediator-data:/data
+
+volumes:
+  mediator-data:
