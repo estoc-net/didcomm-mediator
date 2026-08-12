@@ -116,6 +116,13 @@ The DIDComm layer (pack/unpack via didcomm-node, did:peer:2/4 and did:web
 resolution) is shared lineage with
 [didcomm-http](https://github.com/estoc-net/didcomm-http).
 
+## Status
+
+Experimental. This mediator and the didcomm libraries under it have not
+received an independent security audit, and the protocol surface may still
+change. Run your own instance freely; don't yet rely on one to carry anything
+you can't afford to lose.
+
 ## License
 
 Apache-2.0
