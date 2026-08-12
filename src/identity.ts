@@ -109,7 +109,8 @@ export function mintStoredIdentity(
 export function loadOrCreateIdentity(
   dataDir: string,
   publicUrl: string,
-  methods: DidMethod | DidMethod[] = "peer2",
+  /** Empty = unspecified: follow the stored DID's method; mint peer2 fresh. */
+  methods: DidMethod | DidMethod[] = [],
   log: (msg: string) => void = console.log
 ): MediatorIdentity {
   const list = asList(methods);
@@ -132,7 +133,7 @@ export function loadOrCreateIdentity(
       );
     }
     const storedMethod = methodOf(stored.did);
-    if (storedMethod !== null && !list.includes(storedMethod)) {
+    if (list.length > 0 && storedMethod !== null && !list.includes(storedMethod)) {
       log(
         `The identity on disk is ${storedMethod} but MEDIATOR_DID_METHODS is ` +
           `${list.join(",")} — clients bound to ${stored.did} will no longer ` +
@@ -142,7 +143,7 @@ export function loadOrCreateIdentity(
     return toIdentity(stored, list);
   }
 
-  const created = createIdentity(publicUrl, list[0]);
+  const created = createIdentity(publicUrl, list[0] ?? "peer2");
   writeFileSync(path, JSON.stringify(created, null, 2), { mode: 0o600 });
   log(`Minted mediator identity ${created.did}`);
   return toIdentity(created, list);

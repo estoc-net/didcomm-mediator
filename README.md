@@ -114,7 +114,7 @@ requires an authcrypt envelope, and the proven sender DID *is* the account.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `MEDIATOR_PUBLIC_URL` | — (required) | Public URL, baked into the DID on first start |
-| `MEDIATOR_DID_METHODS` | `peer2` | Ordered list of active methods (`peer2,peer4,web`); first = primary, minted on first start |
+| `MEDIATOR_DID_METHODS` | stored DID's method (first start mints `peer2`) | Ordered list of active methods (`peer2,peer4,web`); first = primary |
 | `MEDIATOR_PORT` / `MEDIATOR_HOST` | `8080` / `0.0.0.0` | Listen address |
 | `MEDIATOR_DATA_DIR` | `/data` in Docker, `./data` otherwise | Identity + SQLite |
 | `MEDIATOR_OPEN_REGISTRATION` | `true` | Grant mediation to any DID that asks |

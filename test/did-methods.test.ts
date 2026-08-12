@@ -1,9 +1,16 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { IMessage } from "didcomm-node";
 
 import { DIDCommContext } from "../src/didcomm/didcomm.js";
 import { didWebFromUrl } from "../src/identity-core.js";
-import { mintIdentity, type MediatorIdentity } from "../src/identity.js";
+import {
+  loadOrCreateIdentity,
+  mintIdentity,
+  type MediatorIdentity,
+} from "../src/identity.js";
 import { buildServer } from "../src/server.js";
 import { longToShort } from "@estoc/did-peer";
 import {
@@ -255,6 +262,26 @@ describe("simultaneous methods", () => {
     );
     expect(viaAlias.from).toBe(flipped.aliases[0].did);
     expect(viaAlias.body.routing_did).toEqual([flipped.aliases[0].did]);
+  });
+});
+
+describe("loadOrCreateIdentity defaults", () => {
+  it("follows the stored DID's method when none is specified", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mediator-did-methods-"));
+    try {
+      const minted = loadOrCreateIdentity(
+        dir,
+        TEST_CONFIG.publicUrl,
+        "web",
+        () => {}
+      );
+      // No methods — the identity on disk decides, same as on Workers.
+      const reloaded = loadOrCreateIdentity(dir, TEST_CONFIG.publicUrl, [], () => {});
+      expect(reloaded.did).toBe(minted.did);
+      expect(reloaded.dids).toEqual([minted.did]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

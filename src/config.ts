@@ -22,7 +22,8 @@ export interface MediatorConfig extends MediatorPolicy {
   /**
    * The active DID methods, in order — the first is the primary (advertised)
    * DID and what a first boot mints; the rest are aliases the mediator
-   * answers to equally. All derive from the one stored key set.
+   * answers to equally. All derive from the one stored key set. Empty means
+   * unspecified: follow the stored DID's method (a first boot mints peer2).
    */
   didMethods: DidMethod[];
   host: string;
@@ -35,9 +36,16 @@ function env(name: string): string | undefined {
   return value === undefined || value === "" ? undefined : value;
 }
 
-/** A comma-separated, ordered method list — "peer2,web" — shared with Workers. */
+/**
+ * A comma-separated, ordered method list — "peer2,web" — shared with Workers.
+ * Unset means unspecified (empty list): an existing identity follows its
+ * stored DID's method, and a first boot mints the default (peer2).
+ */
 export function parseDidMethods(value: string | undefined): DidMethod[] {
-  const methods = (value ?? "peer2").split(",").map((entry) => entry.trim());
+  if (value === undefined) {
+    return [];
+  }
+  const methods = value.split(",").map((entry) => entry.trim());
   for (const method of methods) {
     if (!(DID_METHODS as readonly string[]).includes(method)) {
       throw new Error(

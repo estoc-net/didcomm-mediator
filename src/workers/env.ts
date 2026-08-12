@@ -52,12 +52,7 @@ export function depsFromEnv(env: Env): WorkerDeps {
   }
 
   const stored = JSON.parse(env.MEDIATOR_IDENTITY) as StoredIdentity;
-  const identity = toIdentity(
-    stored,
-    env.MEDIATOR_DID_METHODS === undefined
-      ? []
-      : parseDidMethods(env.MEDIATOR_DID_METHODS)
-  );
+  const identity = toIdentity(stored, parseDidMethods(env.MEDIATOR_DID_METHODS));
   const policy = policyFromEnv(env);
 
   return {
