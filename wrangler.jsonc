@@ -29,11 +29,10 @@
     {
       "binding": "DB",
       "database_name": "mediator",
-      // Placeholder — `wrangler dev` runs against a local database regardless;
-      // replace with the id from `wrangler d1 create mediator` to deploy.
-      "database_id": "00000000-0000-0000-0000-000000000000"
+      "database_id": "3cb0373b-496b-4f85-99c8-2e151a24b6eb"
     }
   ],
+  "routes": [{ "pattern": "mediator.estoc.dev", "custom_domain": true }],
   // Hourly purge of expired messages.
   "triggers": { "crons": ["17 * * * *"] },
   "observability": { "enabled": true }
