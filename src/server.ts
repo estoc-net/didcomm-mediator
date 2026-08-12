@@ -1,152 +1,145 @@
-import Fastify, { type FastifyInstance } from "fastify";
-import cors from "@fastify/cors";
-import websocket from "@fastify/websocket";
+import { serve } from "@hono/node-server";
+import { createNodeWebSocket } from "@hono/node-ws";
+import type { Hono } from "hono";
+import type { Server } from "node:http";
 
+import { buildApp } from "./app.js";
 import type { MediatorConfig } from "./config.js";
 import { DIDCommContext } from "./didcomm/didcomm.js";
 import type { MediatorIdentity } from "./identity.js";
 import { dispatch } from "./protocols/dispatch.js";
-import { SUPPORTED_PROTOCOLS } from "./protocols/discover-features.js";
 import type { Session } from "./protocols/types.js";
 import type { MediationStore } from "./store/types.js";
 import { Sessions } from "./transport/sessions.js";
-
-const ENCRYPTED = "application/didcomm-encrypted+json";
-const DIDCOMM_CONTENT_TYPES = [
-  ENCRYPTED,
-  "application/didcomm-signed+json",
-  "application/didcomm-plain+json",
-];
 
 export interface ServerOptions {
   identity: MediatorIdentity;
   store: MediationStore;
   config: MediatorConfig;
-  logger?: boolean;
+  /** Where refused envelopes get logged; silent by default. */
+  log?: (msg: string, err?: unknown) => void;
+}
+
+export interface MediatorServer {
+  app: Hono;
+  /** Resolves to the actual bound port (useful with port 0). */
+  listen(): Promise<number>;
+  close(): Promise<void>;
 }
 
 /**
- * The whole wire surface: POST / for envelopes (reply in the response body —
- * the return-route pattern every standard client expects), a WebSocket
- * upgrade on the same path for live delivery, and two discovery endpoints.
- * A standard client knows nothing but the service endpoint URI in the DID, so
- * everything must hang off it.
+ * The Node shape of the mediator: the shared Hono app plus this runtime's
+ * WebSocket story — one process, so live sessions are an in-memory registry
+ * and the upgrade handler simply joins it. (On Workers the same app is served
+ * by a stateless isolate and the socket work moves into a Durable Object.)
  */
 export function buildServer({
   identity,
   store,
   config,
-  logger = true,
-}: ServerOptions): FastifyInstance {
-  const app = Fastify({ logger });
+  log = () => {},
+}: ServerOptions): MediatorServer {
   const ctx = new DIDCommContext(identity.did, identity.didDoc, identity.secrets);
   const sessions = new Sessions();
+  const app = buildApp({ ctx, store, policy: config, sessions, log });
+  const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 
-  app.register(cors, {
-    origin: config.corsOrigin,
-    methods: ["GET", "POST", "OPTIONS"],
-  });
-
-  // DIDComm media types arrive as opaque strings; unpack is the parser.
-  for (const type of DIDCOMM_CONTENT_TYPES) {
-    app.addContentTypeParser(type, { parseAs: "string" }, (_req, body, done) =>
-      done(null, body)
-    );
-  }
-
-  app.register(async (app) => {
-    await app.register(websocket);
-
-    app.post("/", async (request, reply) => {
-      if (typeof request.body !== "string") {
-        return reply
-          .code(415)
-          .send({ error: `Content-Type must be one of: ${DIDCOMM_CONTENT_TYPES.join(", ")}` });
-      }
-
-      let packed: string | null;
-      try {
-        const unpacked = await ctx.unpack(request.body);
-        packed = await dispatch(unpacked, {
-          ctx,
-          store,
-          config,
-          sessions,
-          session: null,
-          sender: unpacked.verifiedFrom,
-        });
-      } catch (err) {
-        request.log.info({ err }, "envelope refused");
-        return reply.code(400).send({ error: "Message could not be unpacked" });
-      }
-
-      if (packed === null) {
-        return reply.code(202).send();
-      }
-      return reply.code(200).header("content-type", ENCRYPTED).send(packed);
-    });
-
-    app.get("/", { websocket: true }, (socket, request) => {
-      const session: Session = {
+  app.get(
+    "/",
+    upgradeWebSocket(() => {
+      const session: Session & { socket: WSLike | null } = {
         did: null,
         liveDelivery: false,
+        socket: null,
         send(packed: string): boolean {
-          if (socket.readyState !== socket.OPEN) {
+          if (this.socket === null || this.socket.readyState !== 1) {
             return false;
           }
           // As a binary frame: browsers hand a text frame to onmessage as a
           // string, and the DIF demo (following Affinidi's lead) calls
           // `event.data.text()` — which only a Blob has, and only a binary
           // frame arrives as one.
-          socket.send(Buffer.from(packed));
+          this.socket.send(new TextEncoder().encode(packed));
           return true;
         },
       };
 
-      socket.on("message", async (raw: Buffer) => {
-        try {
-          const unpacked = await ctx.unpack(raw.toString("utf8"));
+      return {
+        onOpen(_evt, ws) {
+          session.socket = ws;
+        },
+        async onMessage(evt, ws) {
+          session.socket = ws;
+          try {
+            const raw =
+              typeof evt.data === "string"
+                ? evt.data
+                : new TextDecoder().decode(
+                    evt.data instanceof Blob
+                      ? new Uint8Array(await evt.data.arrayBuffer())
+                      : new Uint8Array(evt.data)
+                  );
+            const unpacked = await ctx.unpack(raw);
 
-          // The socket inherits the first proven identity and keeps it: live
-          // delivery needs a DID to index the connection under, and a session
-          // that could re-bind mid-flight could be walked onto someone else's
-          // inbox by a single crafted envelope.
-          if (session.did === null && unpacked.verifiedFrom !== null) {
-            session.did = unpacked.verifiedFrom;
-            sessions.bind(session.did, session);
+            // The socket inherits the first proven identity and keeps it: live
+            // delivery needs a DID to index the connection under, and a session
+            // that could re-bind mid-flight could be walked onto someone else's
+            // inbox by a single crafted envelope.
+            if (session.did === null && unpacked.verifiedFrom !== null) {
+              session.did = unpacked.verifiedFrom;
+              sessions.bind(session.did, session);
+            }
+
+            const packed = await dispatch(unpacked, {
+              ctx,
+              store,
+              config,
+              sessions,
+              session,
+              sender: unpacked.verifiedFrom,
+            });
+
+            if (packed !== null) {
+              session.send(packed);
+            }
+          } catch (err) {
+            log("websocket envelope refused", err);
           }
+        },
+        onClose() {
+          sessions.drop(session.did, session);
+        },
+      };
+    })
+  );
 
-          const packed = await dispatch(unpacked, {
-            ctx,
-            store,
-            config,
-            sessions,
-            session,
-            sender: unpacked.verifiedFrom,
-          });
+  let server: Server | null = null;
 
-          if (packed !== null) {
-            session.send(packed);
-          }
-        } catch (err) {
-          request.log.info({ err }, "websocket envelope refused");
+  return {
+    app,
+    listen(): Promise<number> {
+      return new Promise((resolve) => {
+        server = serve(
+          { fetch: app.fetch, hostname: config.host, port: config.port },
+          (info) => resolve(info.port)
+        ) as Server;
+        injectWebSocket(server);
+      });
+    },
+    close(): Promise<void> {
+      return new Promise((resolve, reject) => {
+        if (server === null) {
+          resolve();
+          return;
         }
+        server.closeAllConnections();
+        server.close((err) => (err ? reject(err) : resolve()));
       });
+    },
+  };
+}
 
-      socket.on("close", () => {
-        sessions.drop(session.did, session);
-      });
-    });
-  });
-
-  const describe = () => ({
-    did: identity.did,
-    protocols: SUPPORTED_PROTOCOLS,
-  });
-
-  // The path Affinidi clients look at, and a convenient one for humans.
-  app.get("/.well-known/did", describe);
-  app.get("/health", () => ({ status: "ok" }));
-
-  return app;
+interface WSLike {
+  readyState: number;
+  send(data: Uint8Array<ArrayBuffer>): void;
 }

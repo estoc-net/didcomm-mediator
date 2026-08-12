@@ -1,6 +1,6 @@
 import type { IMessage } from "didcomm-node";
 
-import type { MediatorConfig } from "../config.js";
+import type { MediatorPolicy } from "../config.js";
 import type { DIDCommContext, Unpacked } from "../didcomm/didcomm.js";
 import type { MediationStore } from "../store/types.js";
 
@@ -17,16 +17,22 @@ export interface Session {
   send(packed: string): boolean;
 }
 
-export interface SessionRegistry {
-  /** Sessions authenticated as `did` that asked for live delivery. */
-  liveSessionsFor(did: string): Session[];
+/**
+ * Where live-delivery pushes go. On Node this is the in-process session
+ * registry; on Workers it is a stub that hands the packed delivery to the
+ * inbox Durable Object holding the sockets. `wantsPush` exists so the caller
+ * can skip packing a delivery nobody is listening for.
+ */
+export interface LiveSink {
+  wantsPush(ownerDid: string): boolean | Promise<boolean>;
+  push(ownerDid: string, packedDelivery: string): void | Promise<void>;
 }
 
 export interface HandlerContext {
   ctx: DIDCommContext;
   store: MediationStore;
-  config: MediatorConfig;
-  sessions: SessionRegistry;
+  config: MediatorPolicy;
+  sessions: LiveSink;
   /** The session the message arrived on; null for plain HTTP. */
   session: Session | null;
   /** The DID proven by the envelope (authcrypt or signature); null if anonymous. */

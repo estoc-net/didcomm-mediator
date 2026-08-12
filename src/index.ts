@@ -14,23 +14,29 @@ const store = new SqliteStore(join(config.dataDir, "mediator.db"), {
   maxMessagesPerAccount: config.maxMessagesPerAccount,
 });
 
-const app = buildServer({ identity, store, config });
+const server = buildServer({
+  identity,
+  store,
+  config,
+  log: (msg, err) => console.warn(msg, err instanceof Error ? err.message : err),
+});
 
-const purger = setInterval(() => {
-  const purged = store.purgeExpired();
+const purger = setInterval(async () => {
+  const purged = await store.purgeExpired();
   if (purged > 0) {
-    app.log.info({ purged }, "purged expired messages");
+    console.log(`purged ${purged} expired messages`);
   }
 }, PURGE_INTERVAL_MS);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, async () => {
     clearInterval(purger);
-    await app.close();
+    await server.close();
     store.close();
     process.exit(0);
   });
 }
 
-app.log.info({ did: identity.did }, "mediator identity");
-await app.listen({ host: config.host, port: config.port });
+console.log(`mediator identity ${identity.did}`);
+const port = await server.listen();
+console.log(`listening on ${config.host}:${port}`);

@@ -1,10 +1,16 @@
 # didcomm-mediator-ts
 
 A DIDComm v2 mediator anyone can run with one command. TypeScript, standard
-protocols over plain HTTP/WebSocket transport, SQLite storage, no accounts to
-create and no vendor SDK to adopt — authentication is the envelope itself.
+protocols over plain HTTP/WebSocket transport, no accounts to create and no
+vendor SDK to adopt — authentication is the envelope itself.
 
-## Quick start
+Two deployment targets share one protocol implementation:
+
+- **Node + Docker** — one process, SQLite on a volume.
+- **Cloudflare Workers** — D1 for storage, a Durable Object holding the live
+  WebSockets; `wrangler deploy` and there is no server at all.
+
+## Quick start (Docker)
 
 ```sh
 MEDIATOR_PUBLIC_URL=https://mediator.example.com docker compose up -d
@@ -19,6 +25,25 @@ DID; delete it and the next start mints a fresh identity.
 TLS is out of scope: put any reverse proxy (Caddy, nginx) in front and point
 `MEDIATOR_PUBLIC_URL` at the public HTTPS address. The proxy must also pass
 WebSocket upgrades on the same path.
+
+## Quick start (Cloudflare Workers)
+
+```sh
+wrangler d1 create mediator                    # paste database_id into wrangler.jsonc
+npm run mint-identity -- https://your-worker.example.workers.dev
+wrangler secret put MEDIATOR_IDENTITY          # paste the JSON the mint printed
+wrangler deploy
+npm run smoke -- https://your-worker.example.workers.dev
+```
+
+The identity is minted once, by you, and handed over as a secret — a Workers
+deploy must never mint its own, because the public URL (and so the DID) has to
+outlive every redeploy. Locally, `wrangler dev` works the same way with
+`MEDIATOR_IDENTITY='<json>'` in `.dev.vars`.
+
+`npm run smoke -- <url>` drives a real client through the whole surface —
+grant, keylist, anonymous forward, pickup, WebSocket live delivery — against
+any running mediator, whichever target it is.
 
 ## Protocols
 
@@ -81,6 +106,11 @@ npm run typecheck
   claims: grants and reads key off the authcrypt key's DID.
 - **Live delivery pushes but never hands off.** A pushed message stays queued
   until `messages-received`; a dropped socket loses nothing.
+
+- **The runtimes differ only where they must.** The wire surface is one Hono
+  app (`src/app.ts`) and the protocol layer is runtime-free; Node keeps live
+  sockets in process memory, Workers keep them in a Durable Object, and the
+  didcomm WASM is the same Rust either way.
 
 The DIDComm layer (pack/unpack via didcomm-node, did:peer:2/4 and did:web
 resolution) is shared lineage with

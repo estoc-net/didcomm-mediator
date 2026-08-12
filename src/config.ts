@@ -1,9 +1,9 @@
-export interface MediatorConfig {
-  /** The URL agents reach this mediator at; baked into the DID on first boot. */
-  publicUrl: string;
-  host: string;
-  port: number;
-  dataDir: string;
+/**
+ * The part of the configuration the protocol layer and shared HTTP surface
+ * consume — everything that is true of the mediator regardless of whether it
+ * runs on Node or on Workers.
+ */
+export interface MediatorPolicy {
   /**
    * Whether any DID that asks is granted mediation. Off, mediate-request is
    * denied unless the DID already holds an account (granted out of band).
@@ -12,6 +12,14 @@ export interface MediatorConfig {
   corsOrigin: string | boolean;
   messageTtlSeconds: number;
   maxMessagesPerAccount: number;
+}
+
+export interface MediatorConfig extends MediatorPolicy {
+  /** The URL agents reach this mediator at; baked into the DID on first boot. */
+  publicUrl: string;
+  host: string;
+  port: number;
+  dataDir: string;
 }
 
 function env(name: string): string | undefined {

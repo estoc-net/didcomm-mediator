@@ -3,66 +3,68 @@ import { describe, expect, it } from "vitest";
 import { SqliteStore } from "../src/store/sqlite.js";
 
 describe("SqliteStore", () => {
-  it("binds a recipient to one owner only", () => {
+  it("binds a recipient to one owner only", async () => {
     const store = new SqliteStore(":memory:");
-    store.grantMediation("did:example:alice");
-    store.grantMediation("did:example:bob");
+    await store.grantMediation("did:example:alice");
+    await store.grantMediation("did:example:bob");
 
-    expect(store.addRecipient("did:example:alice", "did:example:alias")).toBe(
+    expect(await store.addRecipient("did:example:alice", "did:example:alias")).toBe(
       "added"
     );
-    expect(store.addRecipient("did:example:alice", "did:example:alias")).toBe(
+    expect(await store.addRecipient("did:example:alice", "did:example:alias")).toBe(
       "already-yours"
     );
-    expect(store.addRecipient("did:example:bob", "did:example:alias")).toBe(
+    expect(await store.addRecipient("did:example:bob", "did:example:alias")).toBe(
       "taken"
     );
-    expect(store.ownerOf("did:example:alias")).toBe("did:example:alice");
+    expect(await store.ownerOf("did:example:alias")).toBe("did:example:alice");
     store.close();
   });
 
-  it("stops storing past the per-account quota", () => {
+  it("stops storing past the per-account quota", async () => {
     const store = new SqliteStore(":memory:", { maxMessagesPerAccount: 2 });
-    store.grantMediation("did:example:alice");
+    await store.grantMediation("did:example:alice");
 
-    expect(store.storeMessage("did:example:alice", "one")).not.toBeNull();
-    expect(store.storeMessage("did:example:alice", "two")).not.toBeNull();
-    expect(store.storeMessage("did:example:alice", "three")).toBeNull();
-    expect(store.messageCount("did:example:alice")).toBe(2);
+    expect(await store.storeMessage("did:example:alice", "one")).not.toBeNull();
+    expect(await store.storeMessage("did:example:alice", "two")).not.toBeNull();
+    expect(await store.storeMessage("did:example:alice", "three")).toBeNull();
+    expect(await store.messageCount("did:example:alice")).toBe(2);
     store.close();
   });
 
-  it("scopes deletion to the owner", () => {
+  it("scopes deletion to the owner", async () => {
     const store = new SqliteStore(":memory:");
-    store.grantMediation("did:example:alice");
-    store.grantMediation("did:example:bob");
-    const id = store.storeMessage("did:example:alice", "hers");
+    await store.grantMediation("did:example:alice");
+    await store.grantMediation("did:example:bob");
+    const id = await store.storeMessage("did:example:alice", "hers");
     expect(id).not.toBeNull();
 
-    expect(store.deleteMessages("did:example:bob", [id as string])).toEqual([]);
-    expect(store.messageCount("did:example:alice")).toBe(1);
+    expect(await store.deleteMessages("did:example:bob", [id as string])).toEqual(
+      []
+    );
+    expect(await store.messageCount("did:example:alice")).toBe(1);
     store.close();
   });
 
-  it("expires messages by TTL", () => {
+  it("expires messages by TTL", async () => {
     const store = new SqliteStore(":memory:", { messageTtlSeconds: -1 });
-    store.grantMediation("did:example:alice");
-    store.storeMessage("did:example:alice", "already old");
+    await store.grantMediation("did:example:alice");
+    await store.storeMessage("did:example:alice", "already old");
 
-    expect(store.messageCount("did:example:alice")).toBe(0);
-    expect(store.purgeExpired()).toBe(1);
+    expect(await store.messageCount("did:example:alice")).toBe(0);
+    expect(await store.purgeExpired()).toBe(1);
     store.close();
   });
 
-  it("takes the keylist and inbox down with the account", () => {
+  it("takes the keylist and inbox down with the account", async () => {
     const store = new SqliteStore(":memory:");
-    store.grantMediation("did:example:alice");
-    store.addRecipient("did:example:alice", "did:example:alias");
-    store.storeMessage("did:example:alice", "waiting");
+    await store.grantMediation("did:example:alice");
+    await store.addRecipient("did:example:alice", "did:example:alias");
+    await store.storeMessage("did:example:alice", "waiting");
 
-    store.revokeMediation("did:example:alice");
-    expect(store.ownerOf("did:example:alias")).toBeNull();
-    expect(store.isMediated("did:example:alice")).toBe(false);
+    await store.revokeMediation("did:example:alice");
+    expect(await store.ownerOf("did:example:alias")).toBeNull();
+    expect(await store.isMediated("did:example:alice")).toBe(false);
     store.close();
   });
 });

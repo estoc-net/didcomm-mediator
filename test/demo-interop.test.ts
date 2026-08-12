@@ -4,12 +4,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import bs58 from "bs58";
-import type { FastifyInstance } from "fastify";
 import { Message } from "didcomm-node";
 import type { IMessage } from "didcomm-node";
 import WebSocket from "ws";
 
-import { buildServer } from "../src/server.js";
+import { buildServer, type MediatorServer } from "../src/server.js";
 import { loadOrCreateIdentity, type MediatorIdentity } from "../src/identity.js";
 import { encodeLongForm } from "../src/didcomm/did-peer-4.js";
 import { resolveDIDCommDoc } from "../src/didcomm/did-resolver.js";
@@ -28,7 +27,7 @@ import { TEST_CONFIG, memoryStore } from "./helpers.js";
 const PORT = 18099;
 const BASE = `http://127.0.0.1:${PORT}`;
 
-let app: FastifyInstance;
+let server: MediatorServer;
 let mediator: MediatorIdentity;
 let dataDir: string;
 
@@ -206,17 +205,16 @@ async function establishMediation(agent: DemoAgent): Promise<void> {
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "mediator-ts-demo-test-"));
   mediator = loadOrCreateIdentity(dataDir, BASE, () => {});
-  app = buildServer({
+  server = buildServer({
     identity: mediator,
     store: memoryStore(),
-    config: { ...TEST_CONFIG, publicUrl: BASE },
-    logger: false,
+    config: { ...TEST_CONFIG, publicUrl: BASE, host: "127.0.0.1", port: PORT },
   });
-  await app.listen({ host: "127.0.0.1", port: PORT });
+  await server.listen();
 });
 
 afterAll(async () => {
-  await app.close();
+  await server.close();
   rmSync(dataDir, { recursive: true, force: true });
 });
 

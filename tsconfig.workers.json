@@ -1,0 +1,13 @@
+// Typecheck for the Workers target (wrangler bundles without checking).
+// The main tsconfig excludes src/workers — workerd globals and Node's don't
+// belong in one program; tsc follows the imports into the shared code and
+// checks it under both configurations.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": ["src/workers/**/*"],
+  "exclude": ["node_modules", "dist", "test"]
+}

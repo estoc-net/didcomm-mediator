@@ -2,10 +2,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { FastifyInstance } from "fastify";
 import WebSocket from "ws";
 
-import { buildServer } from "../src/server.js";
+import { buildServer, type MediatorServer } from "../src/server.js";
 import { loadOrCreateIdentity, type MediatorIdentity } from "../src/identity.js";
 import {
   TEST_CONFIG,
@@ -22,7 +21,7 @@ import {
  * open socket — the one flow app.inject cannot exercise.
  */
 
-let app: FastifyInstance;
+let server: MediatorServer;
 let mediator: MediatorIdentity;
 let alice: TestAgent;
 let baseUrl: string;
@@ -32,22 +31,17 @@ beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "mediator-ts-ws-test-"));
   mediator = loadOrCreateIdentity(dataDir, TEST_CONFIG.publicUrl, () => {});
   alice = agent("alice-live");
-  app = buildServer({
+  server = buildServer({
     identity: mediator,
     store: memoryStore(),
     config: TEST_CONFIG,
-    logger: false,
   });
-  await app.listen({ host: "127.0.0.1", port: 0 });
-  const address = app.server.address();
-  if (address === null || typeof address === "string") {
-    throw new Error("no listening address");
-  }
-  baseUrl = `127.0.0.1:${address.port}`;
+  const port = await server.listen();
+  baseUrl = `127.0.0.1:${port}`;
 });
 
 afterAll(async () => {
-  await app.close();
+  await server.close();
   rmSync(dataDir, { recursive: true, force: true });
 });
 

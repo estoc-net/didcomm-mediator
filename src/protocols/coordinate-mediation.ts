@@ -29,19 +29,19 @@ export const RECIPIENT =
 const MAX_RECIPIENT_DID_LENGTH = 2048;
 const QUERY_PAGE_LIMIT = 100;
 
-export function mediateRequest(
+export async function mediateRequest(
   _incoming: Unpacked,
   { ctx, store, config, sender }: HandlerContext
-): Reply {
+): Promise<Reply> {
   if (sender === null) {
     return { type: MEDIATE_DENY, body: {} };
   }
 
-  if (!config.openRegistration && !store.isMediated(sender)) {
+  if (!config.openRegistration && !(await store.isMediated(sender))) {
     return { type: MEDIATE_DENY, body: {} };
   }
 
-  store.grantMediation(sender);
+  await store.grantMediation(sender);
   // The spec's routing_did is an array — 3.0 renamed and pluralized it.
   return { type: MEDIATE_GRANT, body: { routing_did: [ctx.did] } };
 }
@@ -75,11 +75,11 @@ function updates(body: Record<string, unknown>): Update[] {
  * Registering *after* the squat is covered on the forward path, which prefers
  * a local account over any binding unconditionally.
  */
-function addDenialReason(
+async function addDenialReason(
   recipientDid: string,
   sender: string,
   context: HandlerContext
-): string | null {
+): Promise<string | null> {
   if (!recipientDid.startsWith("did:")) {
     return "not a DID";
   }
@@ -89,30 +89,30 @@ function addDenialReason(
   if (recipientDid === context.ctx.did) {
     return "cannot bind the mediator's own DID";
   }
-  if (recipientDid !== sender && context.store.isMediated(recipientDid)) {
+  if (recipientDid !== sender && (await context.store.isMediated(recipientDid))) {
     return "DID holds its own account here";
   }
   return null;
 }
 
-export function recipientUpdate(
+export async function recipientUpdate(
   incoming: Unpacked,
   context: HandlerContext
-): Reply | null {
+): Promise<Reply | null> {
   const { store, sender } = context;
-  if (sender === null || !store.isMediated(sender)) {
+  if (sender === null || !(await store.isMediated(sender))) {
     return null;
   }
 
-  const updated = updates(incoming.message.body).map((update) => {
-    const { recipient_did, action } = update;
-
+  const updated = [];
+  for (const { recipient_did, action } of updates(incoming.message.body)) {
     if (action === "add") {
-      if (addDenialReason(recipient_did, sender, context) !== null) {
-        return { recipient_did, action, result: "client_error" };
+      if ((await addDenialReason(recipient_did, sender, context)) !== null) {
+        updated.push({ recipient_did, action, result: "client_error" });
+        continue;
       }
-      const result = store.addRecipient(sender, recipient_did);
-      return {
+      const result = await store.addRecipient(sender, recipient_did);
+      updated.push({
         recipient_did,
         action,
         result:
@@ -121,30 +121,32 @@ export function recipientUpdate(
             : result === "already-yours"
               ? "no_change"
               : "client_error",
-      };
+      });
+      continue;
     }
 
     if (action === "remove") {
-      return {
+      updated.push({
         recipient_did,
         action,
-        result: store.removeRecipient(sender, recipient_did)
+        result: (await store.removeRecipient(sender, recipient_did))
           ? "success"
           : "no_change",
-      };
+      });
+      continue;
     }
 
-    return { recipient_did, action, result: "client_error" };
-  });
+    updated.push({ recipient_did, action, result: "client_error" });
+  }
 
   return { type: RECIPIENT_UPDATE_RESPONSE, body: { updated } };
 }
 
-export function recipientQuery(
+export async function recipientQuery(
   incoming: Unpacked,
   { store, sender }: HandlerContext
-): Reply | null {
-  if (sender === null || !store.isMediated(sender)) {
+): Promise<Reply | null> {
+  if (sender === null || !(await store.isMediated(sender))) {
     return null;
   }
 
@@ -162,7 +164,7 @@ export function recipientQuery(
       ? Math.min(Math.floor(paginate.limit), QUERY_PAGE_LIMIT)
       : QUERY_PAGE_LIMIT;
 
-  const page = store.listRecipients(sender, offset, limit);
+  const page = await store.listRecipients(sender, offset, limit);
 
   return {
     type: RECIPIENT,

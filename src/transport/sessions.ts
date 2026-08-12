@@ -1,12 +1,15 @@
-import type { Session, SessionRegistry } from "../protocols/types.js";
+import type { LiveSink, Session } from "../protocols/types.js";
 
 /**
  * The WebSocket connections currently open, indexed by the DID each one has
  * proven. A session joins the index on its first authenticated message and
  * leaves when the socket closes; live delivery consults the index, so a
  * closed socket stops receiving pushes by ceasing to exist.
+ *
+ * Used wherever the sockets and the index live in the same memory: the Node
+ * server process, and the inbox Durable Object on Workers.
  */
-export class Sessions implements SessionRegistry {
+export class Sessions implements LiveSink {
   private byDid = new Map<string, Set<Session>>();
 
   bind(did: string, session: Session): void {
@@ -32,5 +35,15 @@ export class Sessions implements SessionRegistry {
     return [...(this.byDid.get(did) ?? [])].filter(
       (session) => session.liveDelivery
     );
+  }
+
+  wantsPush(ownerDid: string): boolean {
+    return this.liveSessionsFor(ownerDid).length > 0;
+  }
+
+  push(ownerDid: string, packedDelivery: string): void {
+    for (const session of this.liveSessionsFor(ownerDid)) {
+      session.send(packedDelivery);
+    }
   }
 }

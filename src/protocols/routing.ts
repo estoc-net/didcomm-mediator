@@ -25,11 +25,11 @@ export const FORWARD = "https://didcomm.org/routing/2.0/forward";
  * bound the DID before the controller registered loses the race the moment
  * registration happens.
  */
-function ownerFor(
+async function ownerFor(
   next: string,
   { store }: HandlerContext
-): string | null {
-  if (store.isMediated(next)) {
+): Promise<string | null> {
+  if (await store.isMediated(next)) {
     return next;
   }
   return store.ownerOf(next);
@@ -71,7 +71,7 @@ export async function forward(
     return null;
   }
 
-  const owner = ownerFor(next, context);
+  const owner = await ownerFor(next, context);
   if (owner === null) {
     return null;
   }
@@ -85,7 +85,7 @@ export async function forward(
       continue;
     }
 
-    const id = context.store.storeMessage(owner, packed);
+    const id = await context.store.storeMessage(owner, packed);
     if (id !== null) {
       stored.push({ id, packed, createdAt: Date.now() });
     }

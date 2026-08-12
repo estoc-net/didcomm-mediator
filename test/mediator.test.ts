@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
-import type { FastifyInstance } from "fastify";
+import type { Hono } from "hono";
 import type { IMessage } from "didcomm-node";
 
 import { buildServer } from "../src/server.js";
@@ -18,7 +18,7 @@ import {
 
 const ENCRYPTED = "application/didcomm-encrypted+json";
 
-let app: FastifyInstance;
+let app: Hono;
 let mediator: MediatorIdentity;
 let alice: TestAgent;
 let bob: TestAgent;
@@ -33,13 +33,10 @@ beforeAll(async () => {
     identity: mediator,
     store: memoryStore(),
     config: TEST_CONFIG,
-    logger: false,
-  });
-  await app.ready();
+  }).app;
 });
 
-afterAll(async () => {
-  await app.close();
+afterAll(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
@@ -54,19 +51,18 @@ async function send(
     mediator.did
   );
 
-  const res = await app.inject({
+  const res = await app.request("/", {
     method: "POST",
-    url: "/",
     headers: { "content-type": ENCRYPTED },
-    payload: packed,
+    body: packed,
   });
 
-  if (res.statusCode === 202) {
-    return { status: res.statusCode, reply: null };
+  if (res.status === 202) {
+    return { status: res.status, reply: null };
   }
 
-  const { message } = await sender.ctx.unpack(res.body);
-  return { status: res.statusCode, reply: message };
+  const { message } = await sender.ctx.unpack(await res.text());
+  return { status: res.status, reply: message };
 }
 
 describe("coordinate-mediation/3.0", () => {
@@ -169,13 +165,12 @@ describe("routing/2.0 + messagepickup/3.0", () => {
       mediator.did
     );
 
-    const res = await app.inject({
+    const res = await app.request("/", {
       method: "POST",
-      url: "/",
       headers: { "content-type": ENCRYPTED },
-      payload: packed,
+      body: packed,
     });
-    expect(res.statusCode).toBe(202);
+    expect(res.status).toBe(202);
   });
 
   it("counts the waiting message", async () => {
@@ -236,14 +231,13 @@ describe("routing/2.0 + messagepickup/3.0", () => {
       mediator.did
     );
 
-    const res = await app.inject({
+    const res = await app.request("/", {
       method: "POST",
-      url: "/",
       headers: { "content-type": ENCRYPTED },
-      payload: packed,
+      body: packed,
     });
-    expect(res.statusCode).toBe(202);
-    expect(res.body).toBe("");
+    expect(res.status).toBe(202);
+    expect(await res.text()).toBe("");
   });
 
   it("delivers to a registered account DID over any squatted binding", async () => {
@@ -270,11 +264,10 @@ describe("routing/2.0 + messagepickup/3.0", () => {
       }),
       mediator.did
     );
-    await app.inject({
+    await app.request("/", {
       method: "POST",
-      url: "/",
       headers: { "content-type": ENCRYPTED },
-      payload: packed,
+      body: packed,
     });
 
     const carolStatus = await send(
@@ -314,14 +307,13 @@ describe("supporting protocols", () => {
       }, { from: alice.did, to: [mediator.did], id: "ping-1" }),
       mediator.did
     );
-    const res = await app.inject({
+    const res = await app.request("/", {
       method: "POST",
-      url: "/",
       headers: { "content-type": ENCRYPTED },
-      payload: packed,
+      body: packed,
     });
 
-    const { message } = await alice.ctx.unpack(res.body);
+    const { message } = await alice.ctx.unpack(await res.text());
     expect(message.type).toBe("https://didcomm.org/trust-ping/2.0/ping-response");
     expect(message.thid).toBe("ping-1");
   });
@@ -349,17 +341,16 @@ describe("supporting protocols", () => {
   });
 
   it("rejects garbage with a 400", async () => {
-    const res = await app.inject({
+    const res = await app.request("/", {
       method: "POST",
-      url: "/",
       headers: { "content-type": ENCRYPTED },
-      payload: "not an envelope",
+      body: "not an envelope",
     });
-    expect(res.statusCode).toBe(400);
+    expect(res.status).toBe(400);
   });
 
   it("publishes its DID", async () => {
-    const res = await app.inject({ method: "GET", url: "/.well-known/did" });
-    expect(res.json().did).toBe(mediator.did);
+    const res = await app.request("/.well-known/did");
+    expect(((await res.json()) as { did: string }).did).toBe(mediator.did);
   });
 });

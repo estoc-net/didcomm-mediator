@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { DIDCommContext, Unpacked } from "../didcomm/didcomm.js";
 import type { StoredMessage } from "../store/types.js";
-import type { HandlerContext, Reply, SessionRegistry } from "./types.js";
+import type { HandlerContext, LiveSink, Reply } from "./types.js";
 import { PROBLEM_REPORT } from "./problem-report.js";
 
 /**
@@ -29,31 +29,31 @@ export const LIVE_DELIVERY_CHANGE =
 
 const DELIVERY_PAGE_LIMIT = 10;
 
-function statusBody(
+async function statusBody(
   { store, session, sender }: HandlerContext,
   recipientDid: unknown
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   return {
-    message_count: sender === null ? 0 : store.messageCount(sender),
+    message_count: sender === null ? 0 : await store.messageCount(sender),
     live_delivery: session?.liveDelivery ?? false,
     ...(typeof recipientDid === "string" ? { recipient_did: recipientDid } : {}),
   };
 }
 
-function requireAccount({ store, sender }: HandlerContext): boolean {
-  return sender !== null && store.isMediated(sender);
+async function requireAccount({ store, sender }: HandlerContext): Promise<boolean> {
+  return sender !== null && (await store.isMediated(sender));
 }
 
-export function statusRequest(
+export async function statusRequest(
   incoming: Unpacked,
   context: HandlerContext
-): Reply | null {
-  if (!requireAccount(context)) {
+): Promise<Reply | null> {
+  if (!(await requireAccount(context))) {
     return null;
   }
   return {
     type: STATUS,
-    body: statusBody(context, incoming.message.body.recipient_did),
+    body: await statusBody(context, incoming.message.body.recipient_did),
   };
 }
 
@@ -65,11 +65,11 @@ function toAttachment(message: StoredMessage) {
   };
 }
 
-export function deliveryRequest(
+export async function deliveryRequest(
   incoming: Unpacked,
   context: HandlerContext
-): Reply | null {
-  if (!requireAccount(context) || context.sender === null) {
+): Promise<Reply | null> {
+  if (!(await requireAccount(context)) || context.sender === null) {
     return null;
   }
 
@@ -79,11 +79,11 @@ export function deliveryRequest(
       ? Math.min(Math.floor(rawLimit), DELIVERY_PAGE_LIMIT)
       : DELIVERY_PAGE_LIMIT;
 
-  const messages = context.store.messagesFor(context.sender, limit);
+  const messages = await context.store.messagesFor(context.sender, limit);
   if (messages.length === 0) {
     return {
       type: STATUS,
-      body: statusBody(context, incoming.message.body.recipient_did),
+      body: await statusBody(context, incoming.message.body.recipient_did),
     };
   }
 
@@ -95,11 +95,11 @@ export function deliveryRequest(
   };
 }
 
-export function messagesReceived(
+export async function messagesReceived(
   incoming: Unpacked,
   context: HandlerContext
-): Reply | null {
-  if (!requireAccount(context) || context.sender === null) {
+): Promise<Reply | null> {
+  if (!(await requireAccount(context)) || context.sender === null) {
     return null;
   }
 
@@ -108,15 +108,15 @@ export function messagesReceived(
     ? list.filter((id): id is string => typeof id === "string")
     : [];
 
-  context.store.deleteMessages(context.sender, ids);
-  return { type: STATUS, body: statusBody(context, undefined) };
+  await context.store.deleteMessages(context.sender, ids);
+  return { type: STATUS, body: await statusBody(context, undefined) };
 }
 
-export function liveDeliveryChange(
+export async function liveDeliveryChange(
   incoming: Unpacked,
   context: HandlerContext
-): Reply | null {
-  if (!requireAccount(context)) {
+): Promise<Reply | null> {
+  if (!(await requireAccount(context))) {
     return null;
   }
 
@@ -133,7 +133,7 @@ export function liveDeliveryChange(
   }
 
   context.session.liveDelivery = incoming.message.body.live_delivery === true;
-  return { type: STATUS, body: statusBody(context, undefined) };
+  return { type: STATUS, body: await statusBody(context, undefined) };
 }
 
 /**
@@ -144,12 +144,11 @@ export function liveDeliveryChange(
  */
 export async function pushLiveDelivery(
   ctx: DIDCommContext,
-  sessions: SessionRegistry,
+  sessions: LiveSink,
   ownerDid: string,
   messages: StoredMessage[]
 ): Promise<void> {
-  const live = sessions.liveSessionsFor(ownerDid);
-  if (live.length === 0 || messages.length === 0) {
+  if (messages.length === 0 || !(await sessions.wantsPush(ownerDid))) {
     return;
   }
 
@@ -167,7 +166,5 @@ export async function pushLiveDelivery(
     ownerDid
   );
 
-  for (const session of live) {
-    session.send(packed);
-  }
+  await sessions.push(ownerDid, packed);
 }

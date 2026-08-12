@@ -54,25 +54,28 @@ export class SqliteStore implements MediationStore {
     `);
   }
 
-  grantMediation(did: string): void {
+  async grantMediation(did: string): Promise<void> {
     this.db
       .prepare("INSERT OR IGNORE INTO accounts (did, created_at) VALUES (?, ?)")
       .run(did, Date.now());
   }
 
-  revokeMediation(did: string): void {
+  async revokeMediation(did: string): Promise<void> {
     // Cascades: the keylist entries and waiting messages go with the account.
     this.db.prepare("DELETE FROM accounts WHERE did = ?").run(did);
   }
 
-  isMediated(did: string): boolean {
+  async isMediated(did: string): Promise<boolean> {
     return (
       this.db.prepare("SELECT 1 FROM accounts WHERE did = ?").get(did) !==
       undefined
     );
   }
 
-  addRecipient(ownerDid: string, recipientDid: string): AddRecipientResult {
+  async addRecipient(
+    ownerDid: string,
+    recipientDid: string
+  ): Promise<AddRecipientResult> {
     const existing = this.db
       .prepare("SELECT owner_did FROM keylist WHERE recipient_did = ?")
       .get(recipientDid) as { owner_did: string } | undefined;
@@ -89,7 +92,7 @@ export class SqliteStore implements MediationStore {
     return "added";
   }
 
-  removeRecipient(ownerDid: string, recipientDid: string): boolean {
+  async removeRecipient(ownerDid: string, recipientDid: string): Promise<boolean> {
     return (
       this.db
         .prepare(
@@ -99,11 +102,11 @@ export class SqliteStore implements MediationStore {
     );
   }
 
-  listRecipients(
+  async listRecipients(
     ownerDid: string,
     offset: number,
     limit: number
-  ): RecipientPage {
+  ): Promise<RecipientPage> {
     const rows = this.db
       .prepare(
         "SELECT recipient_did FROM keylist WHERE owner_did = ? " +
@@ -123,15 +126,15 @@ export class SqliteStore implements MediationStore {
     };
   }
 
-  ownerOf(recipientDid: string): string | null {
+  async ownerOf(recipientDid: string): Promise<string | null> {
     const row = this.db
       .prepare("SELECT owner_did FROM keylist WHERE recipient_did = ?")
       .get(recipientDid) as { owner_did: string } | undefined;
     return row?.owner_did ?? null;
   }
 
-  storeMessage(ownerDid: string, packed: string): string | null {
-    if (this.messageCount(ownerDid) >= this.maxMessages) {
+  async storeMessage(ownerDid: string, packed: string): Promise<string | null> {
+    if (this.countNow(ownerDid) >= this.maxMessages) {
       return null;
     }
 
@@ -146,7 +149,11 @@ export class SqliteStore implements MediationStore {
     return id;
   }
 
-  messageCount(ownerDid: string): number {
+  async messageCount(ownerDid: string): Promise<number> {
+    return this.countNow(ownerDid);
+  }
+
+  private countNow(ownerDid: string): number {
     return (
       this.db
         .prepare(
@@ -156,7 +163,7 @@ export class SqliteStore implements MediationStore {
     ).n;
   }
 
-  messagesFor(ownerDid: string, limit: number): StoredMessage[] {
+  async messagesFor(ownerDid: string, limit: number): Promise<StoredMessage[]> {
     const rows = this.db
       .prepare(
         "SELECT id, packed, created_at FROM messages " +
@@ -175,7 +182,7 @@ export class SqliteStore implements MediationStore {
     }));
   }
 
-  deleteMessages(ownerDid: string, ids: string[]): string[] {
+  async deleteMessages(ownerDid: string, ids: string[]): Promise<string[]> {
     const remove = this.db.prepare(
       "DELETE FROM messages WHERE id = ? AND owner_did = ?"
     );
@@ -192,7 +199,7 @@ export class SqliteStore implements MediationStore {
     return deleted;
   }
 
-  purgeExpired(): number {
+  async purgeExpired(): Promise<number> {
     return this.db
       .prepare("DELETE FROM messages WHERE expires_at <= ?")
       .run(Date.now()).changes;

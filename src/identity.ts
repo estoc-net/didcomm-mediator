@@ -3,9 +3,14 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import bs58 from "bs58";
 
-import { resolve as resolvePeer2 } from "./didcomm/did-peer-2.js";
-import { toDIDCommDIDDoc } from "./didcomm/did-doc.js";
-import type { DIDDoc, Secret } from "./didcomm/types.js";
+import {
+  toIdentity,
+  type MediatorIdentity,
+  type StoredIdentity,
+} from "./identity-core.js";
+
+export { toIdentity } from "./identity-core.js";
+export type { MediatorIdentity, StoredIdentity } from "./identity-core.js";
 
 /**
  * The mediator's own did:peer:2, minted on first boot and reused forever.
@@ -18,20 +23,6 @@ import type { DIDDoc, Secret } from "./didcomm/types.js";
  */
 
 const IDENTITY_FILE = "identity.json";
-
-export interface MediatorIdentity {
-  did: string;
-  didDoc: DIDDoc;
-  secrets: Secret[];
-  publicUrl: string;
-}
-
-interface StoredIdentity {
-  did: string;
-  publicUrl: string;
-  /** Relative ids (#key-1…), absolutized against the DID on load. */
-  secrets: Secret[];
-}
 
 function keyPair(curve: "Ed25519" | "X25519"): { x: string; d: string } {
   const { privateKey } =
@@ -119,23 +110,17 @@ function createIdentity(publicUrl: string): StoredIdentity {
   };
 }
 
-function toIdentity(stored: StoredIdentity): MediatorIdentity {
-  return {
-    did: stored.did,
-    didDoc: toDIDCommDIDDoc(resolvePeer2(stored.did)),
-    publicUrl: stored.publicUrl,
-    // didcomm-rust matches a secret to a verification method by id, and the
-    // converted document's ids are absolute, so these have to be too.
-    secrets: stored.secrets.map((secret) => ({
-      ...secret,
-      id: `${stored.did}${secret.id}`,
-    })),
-  };
-}
-
 /** A fresh identity that touches no disk — the test suite's client factory. */
 export function mintIdentity(publicUrl: string): MediatorIdentity {
   return toIdentity(createIdentity(publicUrl));
+}
+
+/**
+ * The stored (persistable) form of a fresh identity — what a Workers deploy
+ * pastes into `wrangler secret put MEDIATOR_IDENTITY`.
+ */
+export function mintStoredIdentity(publicUrl: string): StoredIdentity {
+  return createIdentity(publicUrl);
 }
 
 export function loadOrCreateIdentity(

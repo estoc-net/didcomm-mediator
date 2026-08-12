@@ -1,0 +1,40 @@
+// Cloudflare Workers deployment of the mediator.
+//
+// Setup:
+//   1. wrangler d1 create mediator            → paste database_id below
+//   2. npm run mint-identity -- https://your-worker.example.workers.dev
+//      wrangler secret put MEDIATOR_IDENTITY  → paste the JSON
+//      (locally: put MEDIATOR_IDENTITY='<json>' in .dev.vars)
+//   3. wrangler deploy
+//
+// The public URL is baked into the DID, so decide it before minting; a new
+// URL means a new identity and a new DID.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "didcomm-mediator",
+  "main": "src/workers/index.ts",
+  "compatibility_date": "2025-10-01",
+  // Buffer and node:crypto in the shared protocol code.
+  "compatibility_flags": ["nodejs_compat"],
+  // The didcomm-node WASM build is Node-only; on workerd the bundler build
+  // stands in through a small instantiation shim (same API, same wasm).
+  "alias": {
+    "didcomm-node": "./src/workers/didcomm-wasm.ts"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "INBOX", "class_name": "InboxHub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["InboxHub"] }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mediator",
+      // Placeholder — `wrangler dev` runs against a local database regardless;
+      // replace with the id from `wrangler d1 create mediator` to deploy.
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  // Hourly purge of expired messages.
+  "triggers": { "crons": ["17 * * * *"] },
+  "observability": { "enabled": true }
+}
