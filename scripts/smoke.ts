@@ -42,10 +42,28 @@ function sameJson(a: unknown, b: unknown): boolean {
   return canonical(a) === canonical(b);
 }
 
-const { did: mediatorDid } = (await (await fetch(`${base}/.well-known/did`)).json()) as {
-  did: string;
-};
+const { did: mediatorDid, invitationUrl } = (await (
+  await fetch(`${base}/.well-known/did`)
+).json()) as { did: string; invitationUrl: string };
 console.log(`mediator: ${mediatorDid}`);
+
+{
+  const res = await fetch(`${base}/invitation`);
+  const invitation = (await res.json()) as { type: string; from: string };
+  check(
+    res.ok &&
+      invitation.type === "https://didcomm.org/out-of-band/2.0/invitation" &&
+      invitation.from === mediatorDid,
+    "OOB invitation served at /invitation"
+  );
+
+  const oob = new URL(invitationUrl).searchParams.get("_oob");
+  check(
+    oob !== null &&
+      sameJson(JSON.parse(Buffer.from(oob, "base64url").toString("utf8")), invitation),
+    "invitation URL _oob decodes to the same invitation"
+  );
+}
 
 const alice = mintIdentity("https://smoke-alice.test/didcomm");
 const ctx = new DIDCommContext(alice.did, alice.didDoc, alice.secrets);

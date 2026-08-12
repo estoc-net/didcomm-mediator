@@ -354,3 +354,70 @@ describe("supporting protocols", () => {
     expect(((await res.json()) as { did: string }).did).toBe(mediator.did);
   });
 });
+
+describe("out-of-band/2.0", () => {
+  const INVITATION = "https://didcomm.org/out-of-band/2.0/invitation";
+
+  it("serves the invitation as a plaintext JWM at /invitation", async () => {
+    const res = await app.request("/invitation");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain(
+      "application/didcomm-plain+json"
+    );
+
+    const invitation = (await res.json()) as {
+      type: string;
+      id: string;
+      from: string;
+      body: { goal_code: string; accept: string[] };
+    };
+    expect(invitation.type).toBe(INVITATION);
+    expect(invitation.from).toBe(mediator.did);
+    expect(invitation.body.goal_code).toBe("request-mediate");
+    expect(invitation.body.accept).toEqual(["didcomm/v2"]);
+    expect(invitation.id.length).toBeGreaterThan(0);
+  });
+
+  it("publishes an invitation URL whose _oob decodes to the invitation", async () => {
+    const { invitationUrl } = (await (
+      await app.request("/.well-known/did")
+    ).json()) as { invitationUrl: string };
+    expect(invitationUrl.startsWith(TEST_CONFIG.publicUrl)).toBe(true);
+
+    const oob = new URL(invitationUrl).searchParams.get("_oob");
+    expect(oob).not.toBeNull();
+    const decoded: unknown = JSON.parse(
+      Buffer.from(oob as string, "base64url").toString("utf8")
+    );
+    expect(decoded).toEqual(await (await app.request("/invitation")).json());
+  });
+
+  it("is deterministic — the QR printed today still matches tomorrow", async () => {
+    const [a, b] = await Promise.all([
+      app.request("/invitation").then((r) => r.json()),
+      app.request("/invitation").then((r) => r.json()),
+    ]);
+    expect(a).toEqual(b);
+  });
+
+  it("shows human-readable instructions when a browser opens the invitation URL", async () => {
+    const res = await app.request("/?_oob=ignored", {
+      headers: { accept: "text/html,application/xhtml+xml" },
+    });
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const page = await res.text();
+    expect(page).toContain(mediator.did);
+    expect(page).toContain("_oob=");
+  });
+
+  it("keeps GET / as JSON for non-browser probes", async () => {
+    const res = await app.request("/");
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const { did, invitationUrl } = (await res.json()) as {
+      did: string;
+      invitationUrl: string;
+    };
+    expect(did).toBe(mediator.did);
+    expect(invitationUrl).toContain("_oob=");
+  });
+});

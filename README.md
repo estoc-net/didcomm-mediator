@@ -54,6 +54,7 @@ any running mediator, whichever target it is.
 | [routing/2.0](https://didcomm.org/routing/2.0) | inbound forward for mediated recipients |
 | [discover-features/2.0](https://didcomm.org/discover-features/2.0) | protocol disclosure |
 | [trust-ping/2.0](https://didcomm.org/trust-ping/2.0) | liveness |
+| [out-of-band/2.0](https://didcomm.org/out-of-band/2.0) | invitation issuing (`GET /invitation`, `?_oob=` URL) |
 
 ## Transport
 
@@ -65,7 +66,12 @@ knows:
 - `GET /` + WebSocket upgrade — same dispatch over a socket; enabling
   live delivery (`live-delivery-change`) turns the socket into a push channel
   for incoming forwards.
-- `GET /.well-known/did` — the mediator's DID and protocol list.
+- `GET /.well-known/did` — the mediator's DID, its out-of-band invitation
+  URL, and the protocol list.
+- `GET /invitation` — the out-of-band 2.0 invitation as a plaintext JWM. The
+  same invitation, base64url-encoded, rides the `?_oob=` parameter of the
+  invitation URL — the string to put in a QR code for any standard wallet.
+  A browser opening that URL gets a human-readable page instead of JSON.
 - `GET /health`.
 
 Anonymous (anoncrypt) envelopes may only carry `forward` — the outer envelope

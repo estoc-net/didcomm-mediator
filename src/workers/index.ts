@@ -24,7 +24,7 @@ function appFor(env: Env): Hono {
     return cachedApp;
   }
 
-  const { ctx, store, policy } = depsFromEnv(env);
+  const { ctx, store, policy, identity } = depsFromEnv(env);
 
   const sink: LiveSink = {
     async wantsPush(ownerDid) {
@@ -46,6 +46,7 @@ function appFor(env: Env): Hono {
     store,
     policy,
     sessions: sink,
+    publicUrl: identity.publicUrl,
     log: (msg, err) => console.warn(msg, err),
   });
   return cachedApp;
