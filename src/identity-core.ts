@@ -1,6 +1,5 @@
-import { resolve as resolvePeer2 } from "./didcomm/did-peer-2.js";
-import { toDIDCommDIDDoc } from "./didcomm/did-doc.js";
-import type { DIDDoc, Secret } from "./didcomm/types.js";
+import { resolvePeer2, toDIDCommDIDDoc } from "@estoc/did-peer";
+import type { DIDDoc, Secret } from "@estoc/did-peer";
 
 /**
  * The runtime-independent half of the mediator's identity: the stored shape

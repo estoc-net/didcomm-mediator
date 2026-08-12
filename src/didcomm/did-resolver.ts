@@ -1,9 +1,14 @@
 import { Resolver, type DIDDocument } from "did-resolver";
 import { getResolver as getWebResolver } from "web-did-resolver";
-import { isPeerDID2, resolve as resolvePeer2 } from "./did-peer-2.js";
-import { isPeerDID4, isShortForm, resolveLongForm } from "./did-peer-4.js";
-import { toDIDCommDIDDoc } from "./did-doc.js";
-import type { DIDDoc } from "./types.js";
+import {
+  isPeerDID2,
+  isPeerDID4,
+  isShortForm,
+  resolveLongForm,
+  resolvePeer2,
+  toDIDCommDIDDoc,
+} from "@estoc/did-peer";
+import type { DIDDoc } from "@estoc/did-peer";
 
 let cachedResolver: Resolver | null = null;
 

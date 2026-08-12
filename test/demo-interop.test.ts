@@ -10,9 +10,9 @@ import WebSocket from "ws";
 
 import { buildServer, type MediatorServer } from "../src/server.js";
 import { loadOrCreateIdentity, type MediatorIdentity } from "../src/identity.js";
-import { encodeLongForm } from "../src/didcomm/did-peer-4.js";
+import { encodeLongForm } from "@estoc/did-peer";
 import { resolveDIDCommDoc } from "../src/didcomm/did-resolver.js";
-import type { Secret } from "../src/didcomm/types.js";
+import type { Secret } from "@estoc/did-peer";
 import { TEST_CONFIG, memoryStore } from "./helpers.js";
 
 /**

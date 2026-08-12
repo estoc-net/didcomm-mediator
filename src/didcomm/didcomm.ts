@@ -6,7 +6,7 @@ import type {
   UnpackMetadata,
 } from "didcomm-node";
 import { resolveDIDCommDoc } from "./did-resolver.js";
-import type { DIDDoc, Secret } from "./types.js";
+import type { DIDDoc, Secret } from "@estoc/did-peer";
 
 /**
  * Pack and unpack with the mediator's own identity.
