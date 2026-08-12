@@ -59,32 +59,46 @@ function multibase(curve: "Ed25519" | "X25519", x: string): string {
 
 /**
  * Assemble a did:peer:2 from one X25519 (keyAgreement) and one Ed25519
- * (authentication) key plus one DIDCommMessaging service.
+ * (authentication) key plus one DIDCommMessaging service per endpoint.
  *
  * Element order is E then V — the customary order in the wild — and the
  * resolver numbers keys across elements in order of appearance, so #key-1 is
  * the X25519 key and #key-2 the Ed25519. The secrets this module writes use
  * the same numbering; change one and the other breaks silently.
+ *
+ * One service per endpoint, not one service with an endpoint array: clients
+ * pick a transport by scanning services for a URI scheme they speak (the DIF
+ * demo does exactly this for ws), and at least one resolver in the wild
+ * cannot read an array-valued serviceEndpoint at all.
  */
-function encodePeer2(keys: { e: string; v: string }, endpoint: string): string {
-  const service = {
-    t: "dm",
-    s: { uri: endpoint, a: ["didcomm/v2"] },
-  };
-  const encoded = Buffer.from(JSON.stringify(service))
-    .toString("base64url")
-    .replace(/=+$/, "");
+function encodePeer2(keys: { e: string; v: string }, endpoints: string[]): string {
+  const services = endpoints.map((uri) => {
+    const service = { t: "dm", s: { uri, a: ["didcomm/v2"] } };
+    return Buffer.from(JSON.stringify(service))
+      .toString("base64url")
+      .replace(/=+$/, "");
+  });
 
-  return `did:peer:2.E${keys.e}.V${keys.v}.S${encoded}`;
+  return `did:peer:2.E${keys.e}.V${keys.v}${services
+    .map((s) => `.S${s}`)
+    .join("")}`;
+}
+
+/** ws(s):// twin of the public URL — the WebSocket upgrade lives on the same path. */
+function wsUrl(publicUrl: string): string | null {
+  return publicUrl.startsWith("http") ? publicUrl.replace(/^http/, "ws") : null;
 }
 
 function createIdentity(publicUrl: string): StoredIdentity {
   const e = keyPair("X25519");
   const v = keyPair("Ed25519");
 
+  const ws = wsUrl(publicUrl);
   const did = encodePeer2(
     { e: multibase("X25519", e.x), v: multibase("Ed25519", v.x) },
-    publicUrl
+    // HTTP first: packers take the first v2 service, and POST is the
+    // transport every client speaks. The ws twin is for live delivery.
+    ws === null ? [publicUrl] : [publicUrl, ws]
   );
 
   return {
