@@ -10,7 +10,7 @@ import { mintIdentity } from "../src/identity.js";
 /**
  * Drive a full client flow against a *running* mediator — the deploy
  * verification tool. Exercises mediation grant, keylist binding, anonymous
- * forward, the pickup loop, and WebSocket live delivery (asserting binary
+ * forward, the pickup loop, and WebSocket live delivery (asserting text
  * frames, the thing headless clients never catch).
  *
  *   npm run smoke -- http://127.0.0.1:8787
@@ -184,11 +184,11 @@ await new Promise<void>((resolve, reject) => {
   ws.once("error", reject);
 });
 
-function nextBinaryFrame(label: string): Promise<string> {
+function nextTextFrame(label: string): Promise<string> {
   return new Promise((resolve, reject) => {
     ws.once("message", (data, isBinary) => {
       try {
-        check(isBinary, `${label} arrived as a binary frame`);
+        check(!isBinary, `${label} arrived as a text frame`);
       } catch (err) {
         reject(err);
         return;
@@ -199,7 +199,7 @@ function nextBinaryFrame(label: string): Promise<string> {
   });
 }
 
-const statusFrame = nextBinaryFrame("live-delivery-change status");
+const statusFrame = nextTextFrame("live-delivery-change status");
 ws.send(
   await ctx.packEncrypted(
     plaintext("https://didcomm.org/messagepickup/3.0/live-delivery-change", {
@@ -211,7 +211,7 @@ ws.send(
 const liveStatus = (await ctx.unpack(await statusFrame)).message;
 check(liveStatus.body.live_delivery === true, "live delivery enabled");
 
-const pushFrame = nextBinaryFrame("live delivery push");
+const pushFrame = nextTextFrame("live delivery push");
 const liveInner = { smoke: "hello live", at: Date.now() };
 check(
   (await forwardAnonymously(alias, liveInner)) === 202,

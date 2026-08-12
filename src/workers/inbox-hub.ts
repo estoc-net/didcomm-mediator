@@ -70,9 +70,9 @@ export class InboxHub {
       },
       send(packed: string): boolean {
         try {
-          // Binary frame — browsers only wrap binary frames in a Blob, and
-          // the DIF demo reads every frame with `event.data.text()`.
-          ws.send(new TextEncoder().encode(packed));
+          // Text frame — reaches every receiver as a plain string; binary
+          // arrives as Blob/Buffer/ArrayBuffer depending on the environment.
+          ws.send(packed);
           return true;
         } catch {
           return false;

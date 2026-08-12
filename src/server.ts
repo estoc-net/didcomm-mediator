@@ -63,11 +63,11 @@ export function buildServer({
           if (this.socket === null || this.socket.readyState !== 1) {
             return false;
           }
-          // As a binary frame: browsers hand a text frame to onmessage as a
-          // string, and the DIF demo (following Affinidi's lead) calls
-          // `event.data.text()` — which only a Blob has, and only a binary
-          // frame arrives as one.
-          this.socket.send(new TextEncoder().encode(packed));
+          // Text frame: the spec is silent on frame type, and a text frame
+          // reaches every receiver as a plain string (browser, RN, Node)
+          // while binary arrives as Blob/Buffer/ArrayBuffer depending on
+          // the environment. Send the most compatible; accept both.
+          this.socket.send(packed);
           return true;
         },
       };
@@ -149,5 +149,5 @@ export function buildServer({
 
 interface WSLike {
   readyState: number;
-  send(data: Uint8Array<ArrayBuffer>): void;
+  send(data: string): void;
 }

@@ -20,7 +20,7 @@
 - **OOB invitation** (`src/oob.ts`): out-of-band/2.0 invitation, deterministic id (sha256 of DID) so the QR/URL never changes across boots; `?_oob=` base64url on the public URL, plaintext JWM at `GET /invitation`. Issue-only — no inbound handler, invitations travel as URLs not envelopes; deliberately **not** in `SUPPORTED_PROTOCOLS` (that list doubles as the discover-features disclosure of what you can *send* us)
 
 ## Gotchas
-- **WS frames must be sent binary** (`TextEncoder`/Buffer, never a string): browsers hand text frames to `onmessage` as strings, and the DIF demo reads every frame with `event.data.text()` — only a Blob has that, and only binary frames arrive as Blobs. Headless ws clients can't catch this; the demo-interop test asserts `isBinary`
+- **WS frames are sent as text, received as either**: the DIDComm v2 spec never specifies the frame type, so implementations disagree — Credo sends binary, ACA-Py accepts both. Text frames arrive as plain strings in every environment (browser/RN/Node) while binary arrives as Blob/Buffer/ArrayBuffer, so we send text and tolerate both inbound. Headless ws clients mask frame-type bugs; the demo-interop test and smoke assert `isBinary === false`
 - didcomm-node needs `message.from` to match the packing key: test helpers must set `from`/`to` in the plaintext
 - didcomm-rust re-serializes JSON with sorted keys — compare forwarded payloads structurally, never by string equality
 - `pack_encrypted` here always `forward: false` — the mediator replies directly; wrapping its own replies for another mediator would be wrong
