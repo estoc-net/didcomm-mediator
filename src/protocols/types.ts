@@ -13,6 +13,12 @@ export interface Session {
   /** The account this session authenticated as, once it has. */
   did: string | null;
   liveDelivery: boolean;
+  /**
+   * Whether this connection has been declared a return route: the
+   * return-route extension is set once per WebSocket and marks the socket as
+   * where replies flow for the rest of its life.
+   */
+  returnRoute: boolean;
   /** Push a packed message to the client; false once the connection is gone. */
   send(packed: string): boolean;
 }

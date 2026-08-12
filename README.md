@@ -61,8 +61,12 @@ any running mediator, whichever target it is.
 Everything hangs off the service endpoint URI, which is all a standard client
 knows:
 
-- `POST /` — a DIDComm envelope in, the reply (if the exchange has one) in the
-  HTTP response body: the return-route pattern.
+- `POST /` — a DIDComm envelope in, the reply (if the exchange has one) in
+  the HTTP response body — but only when the message declares
+  `return_route: "all"`, as messagepickup 3.0 requires of clients. Without
+  it the request still runs and the response is an empty 202. Over a
+  WebSocket the header is set once and marks the socket as the return route
+  for its lifetime.
 - `GET /` + WebSocket upgrade — same dispatch over a socket; enabling
   live delivery (`live-delivery-change`) turns the socket into a push channel
   for incoming forwards.

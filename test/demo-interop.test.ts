@@ -16,12 +16,14 @@ import type { Secret } from "@estoc/did-peer";
 import { TEST_CONFIG, memoryStore } from "./helpers.js";
 
 /**
- * The DIF didcomm-demo's wire behavior, message for message — the same DID
- * shapes (Multikey did:peer:4 long form), the same envelope choices
- * (`forward: true` on everything, live-delivery-change as the first frame on
- * a fresh WebSocket), the same pickup loop. What the browser demo does, this
- * file does over real HTTP and a real socket; if it passes, the demo's only
- * remaining failure modes are browser-side (CORS, atob).
+ * Our didcomm-demo's wire behavior, message for message — the same DID
+ * shapes (Multikey did:peer:4 long form; the mediator-facing DID has no
+ * service), the same envelope choices (`forward: true` on everything,
+ * `return_route: "all"` on every mediator request, live-delivery-change as
+ * the first frame on a fresh WebSocket), the same pickup loop. What the
+ * browser demo does, this file does over real HTTP and a real socket; if it
+ * passes, the demo's only remaining failure modes are browser-side (CORS,
+ * atob).
  */
 
 const PORT = 18099;
@@ -45,8 +47,8 @@ function demoKeys() {
   };
 }
 
-/** generateDidForMediator / generateDid from the demo, verbatim shape. */
-function demoDid(serviceUri: string, withRoutingKeys: boolean) {
+/** mintIdentity from the demo, verbatim shape: null serviceUri, no service. */
+function demoDid(serviceUri: string | null) {
   const keys = demoKeys();
   const did = encodeLongForm({
     "@context": [
@@ -59,17 +61,20 @@ function demoDid(serviceUri: string, withRoutingKeys: boolean) {
     ],
     authentication: ["#key-1"],
     capabilityDelegation: ["#key-1"],
-    service: [
-      {
-        type: "DIDCommMessaging",
-        id: "#service",
-        serviceEndpoint: {
-          uri: serviceUri,
-          accept: ["didcomm/v2"],
-          ...(withRoutingKeys ? { routingKeys: [] as string[] } : {}),
-        },
-      },
-    ],
+    ...(serviceUri === null
+      ? {}
+      : {
+          service: [
+            {
+              type: "DIDCommMessaging",
+              id: "#service",
+              serviceEndpoint: {
+                uri: serviceUri,
+                accept: ["didcomm/v2"],
+              },
+            },
+          ],
+        }),
     keyAgreement: ["#key-2"],
   });
 
@@ -106,7 +111,7 @@ function secretsResolverFor(agent: DemoAgent) {
   };
 }
 
-/** prepareMessage: uuid, ms created_time, body defaulted, forward: true. */
+/** prepareMessage: uuid, epoch-seconds created_time, body defaulted, forward: true. */
 async function demoPack(
   agent: DemoAgent,
   to: string,
@@ -119,8 +124,11 @@ async function demoPack(
     from,
     to: [to],
     body: message.body ?? {},
-    created_time: Date.now(),
+    created_time: Math.floor(Date.now() / 1000),
     type: message.type,
+    // The demo's packForMediator declares the return route on every request
+    // to the mediator; messages to contacts carry no such header.
+    ...(to === mediator.did ? { return_route: "all" } : {}),
   } as IMessage);
 
   const [packed, meta] = await msg.pack_encrypted(
@@ -181,7 +189,7 @@ async function establishMediation(agent: DemoAgent): Promise<void> {
   const routingDid = (grant.body.routing_did as string[])[0];
   expect(routingDid).toBe(mediator.did);
 
-  const publicIdentity = demoDid(routingDid, false);
+  const publicIdentity = demoDid(routingDid);
   agent.did = publicIdentity.did;
   agent.secrets = publicIdentity.secrets;
 
@@ -220,12 +228,12 @@ afterAll(async () => {
 
 describe("didcomm-demo wire behavior", () => {
   const alice: DemoAgent = {
-    didForMediator: demoDid("didcomm:transport/queue", true),
+    didForMediator: demoDid(null),
     did: null,
     secrets: [],
   };
   const bob: DemoAgent = {
-    didForMediator: demoDid("didcomm:transport/queue", true),
+    didForMediator: demoDid(null),
     did: null,
     secrets: [],
   };

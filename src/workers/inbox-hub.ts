@@ -24,6 +24,7 @@ import { depsFromEnv, type Env, type WorkerDeps } from "./env.js";
 interface Attachment {
   did: string | null;
   liveDelivery: boolean;
+  returnRoute: boolean;
 }
 
 interface HubSession extends Session {
@@ -48,6 +49,7 @@ export class InboxHub {
   private adopt(ws: WebSocket): HubSession {
     const saved = (ws.deserializeAttachment() ?? null) as Attachment | null;
     let liveDelivery = saved?.liveDelivery ?? false;
+    let returnRoute = saved?.returnRoute ?? false;
 
     const session: HubSession = {
       ws,
@@ -57,6 +59,13 @@ export class InboxHub {
       },
       set liveDelivery(value: boolean) {
         liveDelivery = value;
+        persist();
+      },
+      get returnRoute() {
+        return returnRoute;
+      },
+      set returnRoute(value: boolean) {
+        returnRoute = value;
         persist();
       },
       send(packed: string): boolean {
@@ -74,6 +83,7 @@ export class InboxHub {
       ws.serializeAttachment({
         did: session.did,
         liveDelivery,
+        returnRoute,
       } satisfies Attachment);
 
     if (session.did !== null) {
@@ -131,6 +141,7 @@ export class InboxHub {
         ws.serializeAttachment({
           did: session.did,
           liveDelivery: session.liveDelivery,
+          returnRoute: session.returnRoute,
         } satisfies Attachment);
       }
 

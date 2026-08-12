@@ -47,7 +47,11 @@ async function send(
   body: Record<string, unknown>
 ): Promise<{ status: number; reply: IMessage | null }> {
   const packed = await sender.ctx.packEncrypted(
-    plaintext(type, body, { from: sender.did, to: [mediator.did] }),
+    plaintext(type, body, {
+      from: sender.did,
+      to: [mediator.did],
+      return_route: "all",
+    }),
     mediator.did
   );
 
@@ -304,7 +308,7 @@ describe("supporting protocols", () => {
     const packed = await alice.ctx.packEncrypted(
       plaintext("https://didcomm.org/trust-ping/2.0/ping", {
         response_requested: true,
-      }, { from: alice.did, to: [mediator.did], id: "ping-1" }),
+      }, { from: alice.did, to: [mediator.did], id: "ping-1", return_route: "all" }),
       mediator.did
     );
     const res = await app.request("/", {
@@ -349,6 +353,36 @@ describe("supporting protocols", () => {
     expect(res.status).toBe(400);
   });
 
+});
+
+describe("return-route extension", () => {
+  it("drops the reply — but not the side effects — without return_route", async () => {
+    const carol = agent("carol");
+    const packed = await carol.ctx.packEncrypted(
+      plaintext(
+        "https://didcomm.org/coordinate-mediation/3.0/mediate-request",
+        {},
+        { from: carol.did, to: [mediator.did] }
+      ),
+      mediator.did
+    );
+
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": ENCRYPTED },
+      body: packed,
+    });
+    expect(res.status).toBe(202);
+
+    // The grant still happened: a follow-up that does declare a return route
+    // reads its own account state back.
+    const { reply } = await send(
+      carol,
+      "https://didcomm.org/messagepickup/3.0/status-request",
+      {}
+    );
+    expect(reply?.type).toBe("https://didcomm.org/messagepickup/3.0/status");
+  });
 });
 
 describe("out-of-band/2.0", () => {

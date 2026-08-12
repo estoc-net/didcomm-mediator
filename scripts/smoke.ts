@@ -76,6 +76,8 @@ function plaintext(type: string, body: Record<string, unknown>): IMessage {
     from: alice.did,
     to: [mediatorDid],
     created_time: Math.floor(Date.now() / 1000),
+    // messagepickup 3.0: every request must declare the return route.
+    return_route: "all",
     body,
   };
 }
@@ -99,10 +101,12 @@ async function forwardAnonymously(next: string, inner: unknown): Promise<number>
   const msg = new Message(
     plaintext("https://didcomm.org/routing/2.0/forward", { next })
   );
-  // Anoncrypt with an attachment — how a stranger's mail arrives.
+  // Anoncrypt with an attachment — how a stranger's mail arrives. A forward
+  // is one-way, so it carries no return_route.
   const withAttachment = new Message({
     ...msg.as_value(),
     from: undefined,
+    return_route: undefined,
     attachments: [{ id: randomUUID(), data: { json: inner } }],
   } as IMessage);
   const [packed] = await withAttachment.pack_encrypted(

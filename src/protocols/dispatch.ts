@@ -57,6 +57,25 @@ function unknownType(incoming: Unpacked, { sender }: HandlerContext): Reply | nu
 }
 
 /**
+ * Whether the reply may ride the connection the request came in on — the
+ * return-route extension, which messagepickup 3.0 requires of clients. Over
+ * HTTP the header must be on every message; over a WebSocket it is set once
+ * and turns the socket into the return route for the rest of its life. A
+ * request without it still runs (its side effects stand), but the reply has
+ * nowhere to go and is dropped.
+ */
+function returnRouteOpen(incoming: Unpacked, { session }: HandlerContext): boolean {
+  const requested = incoming.message.return_route === "all";
+  if (session === null) {
+    return requested;
+  }
+  if (requested) {
+    session.returnRoute = true;
+  }
+  return session.returnRoute;
+}
+
+/**
  * Open envelope in, sealed reply out (or null when the exchange is one-way).
  *
  * The reply's threading and addressing are decided here for every handler at
@@ -68,10 +87,11 @@ export async function dispatch(
   incoming: Unpacked,
   context: HandlerContext
 ): Promise<string | null> {
+  const routed = returnRouteOpen(incoming, context);
   const handler = HANDLERS[incoming.message.type] ?? unknownType;
   const reply = await handler(incoming, context);
 
-  if (reply === null || context.sender === null) {
+  if (reply === null || context.sender === null || !routed) {
     return null;
   }
 

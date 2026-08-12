@@ -60,7 +60,11 @@ async function request(
   body: Record<string, unknown>
 ) {
   const packed = await sender.ctx.packEncrypted(
-    plaintext(type, body, { from: sender.did, to: [mediator.did] }),
+    plaintext(type, body, {
+      from: sender.did,
+      to: [mediator.did],
+      return_route: "all",
+    }),
     mediator.did
   );
   const waiting = nextMessage(ws);

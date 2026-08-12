@@ -57,6 +57,7 @@ export function buildServer({
       const session: Session & { socket: WSLike | null } = {
         did: null,
         liveDelivery: false,
+        returnRoute: false,
         socket: null,
         send(packed: string): boolean {
           if (this.socket === null || this.socket.readyState !== 1) {
