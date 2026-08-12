@@ -1,3 +1,5 @@
+import { isLongForm, longToShort } from "@estoc/did-peer";
+
 import type { Unpacked } from "../didcomm/didcomm.js";
 import type { HandlerContext, Reply } from "./types.js";
 
@@ -29,8 +31,19 @@ export const RECIPIENT =
 const MAX_RECIPIENT_DID_LENGTH = 2048;
 const QUERY_PAGE_LIMIT = 100;
 
+/**
+ * Whether `did` is one of the mediator's own names in any spelling — every
+ * active DID, plus the short form of a long-form did:peer:4, which hashes to
+ * the same document and must be just as unbindable.
+ */
+function isMediatorOwnDid(did: string, mediatorDids: string[]): boolean {
+  return mediatorDids.some(
+    (own) => own === did || (isLongForm(own) && longToShort(own) === did)
+  );
+}
+
 export async function mediateRequest(
-  _incoming: Unpacked,
+  incoming: Unpacked,
   { ctx, store, config, sender }: HandlerContext
 ): Promise<Reply> {
   if (sender === null) {
@@ -43,7 +56,11 @@ export async function mediateRequest(
 
   await store.grantMediation(sender);
   // The spec's routing_did is an array — 3.0 renamed and pluralized it.
-  return { type: MEDIATE_GRANT, body: { routing_did: [ctx.did] } };
+  // Grant the DID the client addressed: that is the one its resolver speaks.
+  return {
+    type: MEDIATE_GRANT,
+    body: { routing_did: [ctx.asOwnDid(incoming.addressedTo)] },
+  };
 }
 
 interface Update {
@@ -86,7 +103,7 @@ async function addDenialReason(
   if (recipientDid.length > MAX_RECIPIENT_DID_LENGTH) {
     return "DID too long";
   }
-  if (recipientDid === context.ctx.did) {
+  if (isMediatorOwnDid(recipientDid, context.ctx.dids)) {
     return "cannot bind the mediator's own DID";
   }
   if (recipientDid !== sender && (await context.store.isMediated(recipientDid))) {

@@ -91,6 +91,14 @@ export async function forward(
     }
   }
 
-  await pushLiveDelivery(context.ctx, context.sessions, owner, stored);
+  // The push introduces itself as the DID the forward was addressed to — the
+  // routing DID the recipient's grant handed out, so the name they expect.
+  await pushLiveDelivery(
+    context.ctx,
+    context.sessions,
+    owner,
+    stored,
+    context.ctx.asOwnDid(incoming.addressedTo)
+  );
   return null;
 }

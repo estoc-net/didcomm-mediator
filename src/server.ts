@@ -39,7 +39,9 @@ export function buildServer({
   config,
   log = () => {},
 }: ServerOptions): MediatorServer {
-  const ctx = new DIDCommContext(identity.did, identity.didDoc, identity.secrets);
+  const ctx = new DIDCommContext(identity.did, identity.didDoc, identity.secrets, {
+    aliases: identity.aliases,
+  });
   const sessions = new Sessions();
   const app = buildApp({
     ctx,
@@ -47,6 +49,7 @@ export function buildServer({
     policy: config,
     sessions,
     publicUrl: config.publicUrl,
+    webDidDoc: identity.webDidDoc,
     log,
   });
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });

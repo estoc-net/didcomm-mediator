@@ -47,6 +47,7 @@ function appFor(env: Env): Hono {
     policy,
     sessions: sink,
     publicUrl: identity.publicUrl,
+    webDidDoc: identity.webDidDoc,
     log: (msg, err) => console.warn(msg, err),
   });
   return cachedApp;

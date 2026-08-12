@@ -1,4 +1,4 @@
-import type { MediatorPolicy } from "../config.js";
+import { parseDidMethods, type MediatorPolicy } from "../config.js";
 import { DIDCommContext } from "../didcomm/didcomm.js";
 import {
   toIdentity,
@@ -18,6 +18,8 @@ export interface Env {
    * orphan every client.
    */
   MEDIATOR_IDENTITY?: string;
+  /** Ordered, comma-separated: "peer2,web". First = primary; default = the stored DID's method. */
+  MEDIATOR_DID_METHODS?: string;
   MEDIATOR_OPEN_REGISTRATION?: string;
   MEDIATOR_CORS_ORIGIN?: string;
   MEDIATOR_MESSAGE_TTL_SECONDS?: string;
@@ -50,12 +52,19 @@ export function depsFromEnv(env: Env): WorkerDeps {
   }
 
   const stored = JSON.parse(env.MEDIATOR_IDENTITY) as StoredIdentity;
-  const identity = toIdentity(stored);
+  const identity = toIdentity(
+    stored,
+    env.MEDIATOR_DID_METHODS === undefined
+      ? []
+      : parseDidMethods(env.MEDIATOR_DID_METHODS)
+  );
   const policy = policyFromEnv(env);
 
   return {
     identity,
-    ctx: new DIDCommContext(identity.did, identity.didDoc, identity.secrets),
+    ctx: new DIDCommContext(identity.did, identity.didDoc, identity.secrets, {
+      aliases: identity.aliases,
+    }),
     store: new D1Store(env.DB, {
       messageTtlSeconds: policy.messageTtlSeconds,
       maxMessagesPerAccount: policy.maxMessagesPerAccount,

@@ -23,6 +23,8 @@ export interface AppDeps {
   sessions: LiveSink;
   /** The public base URL the OOB invitation URL is built on. */
   publicUrl: string;
+  /** The document served at the did:web paths; null unless the identity is did:web. */
+  webDidDoc?: Record<string, unknown> | null;
   /** Where refused envelopes get logged; silent by default. */
   log?: (msg: string, err?: unknown) => void;
 }
@@ -41,6 +43,7 @@ export function buildApp({
   policy,
   sessions,
   publicUrl,
+  webDidDoc = null,
   log = () => {},
 }: AppDeps): Hono {
   const app = new Hono();
@@ -94,6 +97,8 @@ export function buildApp({
 
   const describe = () => ({
     did: ctx.did,
+    // Every name this mediator answers to; `did` is the advertised one.
+    dids: ctx.dids,
     invitationUrl: oobUrl,
     protocols: SUPPORTED_PROTOCOLS,
   });
@@ -120,6 +125,18 @@ export function buildApp({
       "content-type": "application/didcomm-plain+json",
     })
   );
+
+  // did:web resolution: a bare-domain DID is fetched at /.well-known/did.json,
+  // one with path segments at <path>/did.json — which lands here at /did.json
+  // when a proxy mounts the app under that path. Serving both costs nothing.
+  if (webDidDoc !== null) {
+    const body = JSON.stringify(webDidDoc);
+    for (const path of ["/.well-known/did.json", "/did.json"]) {
+      app.get(path, (c) =>
+        c.body(body, 200, { "content-type": "application/did+ld+json" })
+      );
+    }
+  }
 
   app.get("/health", (c) => c.json({ status: "ok" }));
 

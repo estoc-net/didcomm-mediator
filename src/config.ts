@@ -1,3 +1,5 @@
+import { DID_METHODS, type DidMethod } from "./identity-core.js";
+
 /**
  * The part of the configuration the protocol layer and shared HTTP surface
  * consume — everything that is true of the mediator regardless of whether it
@@ -17,6 +19,12 @@ export interface MediatorPolicy {
 export interface MediatorConfig extends MediatorPolicy {
   /** The URL agents reach this mediator at; baked into the DID on first boot. */
   publicUrl: string;
+  /**
+   * The active DID methods, in order — the first is the primary (advertised)
+   * DID and what a first boot mints; the rest are aliases the mediator
+   * answers to equally. All derive from the one stored key set.
+   */
+  didMethods: DidMethod[];
   host: string;
   port: number;
   dataDir: string;
@@ -25,6 +33,19 @@ export interface MediatorConfig extends MediatorPolicy {
 function env(name: string): string | undefined {
   const value = process.env[name];
   return value === undefined || value === "" ? undefined : value;
+}
+
+/** A comma-separated, ordered method list — "peer2,web" — shared with Workers. */
+export function parseDidMethods(value: string | undefined): DidMethod[] {
+  const methods = (value ?? "peer2").split(",").map((entry) => entry.trim());
+  for (const method of methods) {
+    if (!(DID_METHODS as readonly string[]).includes(method)) {
+      throw new Error(
+        `MEDIATOR_DID_METHODS entries must be among ${DID_METHODS.join(", ")}, got ${method}`
+      );
+    }
+  }
+  return methods as DidMethod[];
 }
 
 export function configFromEnv(): MediatorConfig {
@@ -38,6 +59,7 @@ export function configFromEnv(): MediatorConfig {
 
   return {
     publicUrl,
+    didMethods: parseDidMethods(env("MEDIATOR_DID_METHODS")),
     host: env("MEDIATOR_HOST") ?? "0.0.0.0",
     port: Number(env("MEDIATOR_PORT") ?? 8080),
     dataDir: env("MEDIATOR_DATA_DIR") ?? "./data",

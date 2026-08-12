@@ -2,13 +2,18 @@
 //
 // Setup:
 //   1. wrangler d1 create mediator            → paste database_id below
-//   2. npm run mint-identity -- https://your-worker.example.workers.dev
+//   2. npm run mint-identity -- https://your-worker.example.workers.dev [peer2|peer4|web]
 //      wrangler secret put MEDIATOR_IDENTITY  → paste the JSON
 //      (locally: put MEDIATOR_IDENTITY='<json>' in .dev.vars)
 //   3. wrangler deploy
 //
-// The public URL is baked into the DID, so decide it before minting; a new
-// URL means a new identity and a new DID.
+// Decide the public URL before minting: the peer methods bake it into the DID
+// (a new URL means a new identity and a new DID), and did:web derives the DID
+// from the domain and serves keys + endpoints at /.well-known/did.json.
+//
+// MEDIATOR_DID_METHODS (vars, e.g. "peer2,web") activates several names at
+// once off the same secret — first is the advertised primary, the rest are
+// aliases answered equally. Default: the minted DID's own method only.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "didcomm-mediator",

@@ -96,12 +96,16 @@ export async function dispatch(
   }
 
   const thid = incoming.message.thid ?? incoming.message.id;
+  // Reply as the DID the sender addressed: a mediator answering to several
+  // names must not reveal the others, and the sender's resolver may only
+  // know the one it used.
+  const asDid = context.ctx.asOwnDid(incoming.addressedTo);
   return context.ctx.packEncrypted(
     {
       id: randomUUID(),
       typ: "application/didcomm-plain+json",
       type: reply.type,
-      from: context.ctx.did,
+      from: asDid,
       to: [context.sender],
       created_time: Math.floor(Date.now() / 1000),
       thid,
@@ -111,6 +115,7 @@ export async function dispatch(
         ? { attachments: reply.attachments }
         : {}),
     },
-    context.sender
+    context.sender,
+    asDid
   );
 }

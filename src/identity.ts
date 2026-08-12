@@ -1,25 +1,39 @@
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import bs58 from "bs58";
+import type { Secret } from "@estoc/did-peer";
 
 import {
+  deriveDid,
+  methodOf,
   toIdentity,
+  type DidMethod,
   type MediatorIdentity,
   type StoredIdentity,
 } from "./identity-core.js";
 
 export { toIdentity } from "./identity-core.js";
-export type { MediatorIdentity, StoredIdentity } from "./identity-core.js";
+export type {
+  DidMethod,
+  MediatorIdentity,
+  StoredIdentity,
+} from "./identity-core.js";
 
 /**
- * The mediator's own did:peer:2, minted on first boot and reused forever.
+ * The mediator's own identity: one key set minted on first boot and reused
+ * forever, answering to one DID per active method (identity-core has the
+ * derivations):
  *
- * did:peer:2 encodes the service endpoint into the DID itself, which is why
- * the public URL must be known before the first start and cannot change after:
- * a new URL is a new DID, and every agent that granted mediation against the
- * old one would be pointing at nobody. The identity file on the data volume is
- * what makes restarts keep the DID.
+ * - did:peer:2 (default) — self-contained, works anywhere including localhost.
+ *   The endpoint is encoded into the DID itself, so the public URL must be
+ *   known before the first start; a new URL is a new DID.
+ * - did:peer:4 — same trade-offs in a different encoding (the long form
+ *   carries the whole document).
+ * - did:web — the identity is the domain. Keys and endpoints live in the
+ *   did.json the mediator serves, so they can change without changing the
+ *   DID; in exchange the URL must be https and resolvers must reach it.
+ *
+ * The identity file on the data volume is what makes restarts keep the DID.
  */
 
 const IDENTITY_FILE = "identity.json";
@@ -38,96 +52,67 @@ function keyPair(curve: "Ed25519" | "X25519"): { x: string; d: string } {
   return { x: jwk.x, d: jwk.d };
 }
 
-const MULTICODEC = {
-  Ed25519: [0xed, 0x01],
-  X25519: [0xec, 0x01],
-} as const;
-
-function multibase(curve: "Ed25519" | "X25519", x: string): string {
-  const raw = Buffer.from(x, "base64url");
-  return `z${bs58.encode(Buffer.concat([Buffer.from(MULTICODEC[curve]), raw]))}`;
-}
-
-/**
- * Assemble a did:peer:2 from one X25519 (keyAgreement) and one Ed25519
- * (authentication) key plus one DIDCommMessaging service per endpoint.
- *
- * Element order is E then V — the customary order in the wild — and the
- * resolver numbers keys across elements in order of appearance, so #key-1 is
- * the X25519 key and #key-2 the Ed25519. The secrets this module writes use
- * the same numbering; change one and the other breaks silently.
- *
- * One service per endpoint, not one service with an endpoint array: clients
- * pick a transport by scanning services for a URI scheme they speak (the DIF
- * demo does exactly this for ws), and at least one resolver in the wild
- * cannot read an array-valued serviceEndpoint at all.
- */
-function encodePeer2(keys: { e: string; v: string }, endpoints: string[]): string {
-  const services = endpoints.map((uri) => {
-    const service = { t: "dm", s: { uri, a: ["didcomm/v2"] } };
-    return Buffer.from(JSON.stringify(service))
-      .toString("base64url")
-      .replace(/=+$/, "");
-  });
-
-  return `did:peer:2.E${keys.e}.V${keys.v}${services
-    .map((s) => `.S${s}`)
-    .join("")}`;
-}
-
-/** ws(s):// twin of the public URL — the WebSocket upgrade lives on the same path. */
-function wsUrl(publicUrl: string): string | null {
-  return publicUrl.startsWith("http") ? publicUrl.replace(/^http/, "ws") : null;
-}
-
-function createIdentity(publicUrl: string): StoredIdentity {
+function createIdentity(publicUrl: string, method: DidMethod): StoredIdentity {
   const e = keyPair("X25519");
   const v = keyPair("Ed25519");
 
-  const ws = wsUrl(publicUrl);
-  const did = encodePeer2(
-    { e: multibase("X25519", e.x), v: multibase("Ed25519", v.x) },
-    // HTTP first: packers take the first v2 service, and POST is the
-    // transport every client speaks. The ws twin is for live delivery.
-    ws === null ? [publicUrl] : [publicUrl, ws]
-  );
+  // #key-1 is the X25519 key and #key-2 the Ed25519 across every method, so
+  // one set of secrets fits whichever documents the DIDs expand to.
+  const secrets: Secret[] = [
+    {
+      id: "#key-1",
+      type: "JsonWebKey2020",
+      privateKeyJwk: { kty: "OKP", crv: "X25519", x: e.x, d: e.d },
+    },
+    {
+      id: "#key-2",
+      type: "JsonWebKey2020",
+      privateKeyJwk: { kty: "OKP", crv: "Ed25519", x: v.x, d: v.d },
+    },
+  ];
 
   return {
-    did,
+    did: deriveDid(secrets, publicUrl, method),
     publicUrl,
-    secrets: [
-      {
-        id: "#key-1",
-        type: "JsonWebKey2020",
-        privateKeyJwk: { kty: "OKP", crv: "X25519", x: e.x, d: e.d },
-      },
-      {
-        id: "#key-2",
-        type: "JsonWebKey2020",
-        privateKeyJwk: { kty: "OKP", crv: "Ed25519", x: v.x, d: v.d },
-      },
-    ],
+    secrets,
   };
 }
 
-/** A fresh identity that touches no disk — the test suite's client factory. */
-export function mintIdentity(publicUrl: string): MediatorIdentity {
-  return toIdentity(createIdentity(publicUrl));
+function asList(methods: DidMethod | DidMethod[]): DidMethod[] {
+  return Array.isArray(methods) ? methods : [methods];
+}
+
+/**
+ * A fresh identity that touches no disk — the test suite's client factory.
+ * The first method is minted (and primary); the rest ride as aliases.
+ */
+export function mintIdentity(
+  publicUrl: string,
+  methods: DidMethod | DidMethod[] = "peer2"
+): MediatorIdentity {
+  const list = asList(methods);
+  return toIdentity(createIdentity(publicUrl, list[0]), list);
 }
 
 /**
  * The stored (persistable) form of a fresh identity — what a Workers deploy
- * pastes into `wrangler secret put MEDIATOR_IDENTITY`.
+ * pastes into `wrangler secret put MEDIATOR_IDENTITY`. Aliases are not stored:
+ * which methods are active is the deployment's MEDIATOR_DID_METHODS.
  */
-export function mintStoredIdentity(publicUrl: string): StoredIdentity {
-  return createIdentity(publicUrl);
+export function mintStoredIdentity(
+  publicUrl: string,
+  method: DidMethod = "peer2"
+): StoredIdentity {
+  return createIdentity(publicUrl, method);
 }
 
 export function loadOrCreateIdentity(
   dataDir: string,
   publicUrl: string,
+  methods: DidMethod | DidMethod[] = "peer2",
   log: (msg: string) => void = console.log
 ): MediatorIdentity {
+  const list = asList(methods);
   mkdirSync(dataDir, { recursive: true });
   const path = join(dataDir, IDENTITY_FILE);
 
@@ -142,15 +127,23 @@ export function loadOrCreateIdentity(
     if (stored.publicUrl !== publicUrl) {
       log(
         `MEDIATOR_PUBLIC_URL is ${publicUrl} but the identity was minted for ` +
-          `${stored.publicUrl}; the DID keeps its original endpoint. ` +
+          `${stored.publicUrl}; the identity keeps its original endpoint. ` +
           `To move the mediator, delete ${path} and accept a new DID.`
       );
     }
-    return toIdentity(stored);
+    const storedMethod = methodOf(stored.did);
+    if (storedMethod !== null && !list.includes(storedMethod)) {
+      log(
+        `The identity on disk is ${storedMethod} but MEDIATOR_DID_METHODS is ` +
+          `${list.join(",")} — clients bound to ${stored.did} will no longer ` +
+          `be served until ${storedMethod} is listed again.`
+      );
+    }
+    return toIdentity(stored, list);
   }
 
-  const created = createIdentity(publicUrl);
+  const created = createIdentity(publicUrl, list[0]);
   writeFileSync(path, JSON.stringify(created, null, 2), { mode: 0o600 });
   log(`Minted mediator identity ${created.did}`);
-  return toIdentity(created);
+  return toIdentity(created, list);
 }

@@ -146,7 +146,8 @@ export async function pushLiveDelivery(
   ctx: DIDCommContext,
   sessions: LiveSink,
   ownerDid: string,
-  messages: StoredMessage[]
+  messages: StoredMessage[],
+  asDid: string = ctx.did
 ): Promise<void> {
   if (messages.length === 0 || !(await sessions.wantsPush(ownerDid))) {
     return;
@@ -157,13 +158,14 @@ export async function pushLiveDelivery(
       id: randomUUID(),
       typ: "application/didcomm-plain+json",
       type: DELIVERY,
-      from: ctx.did,
+      from: asDid,
       to: [ownerDid],
       created_time: Math.floor(Date.now() / 1000),
       body: {},
       attachments: messages.map(toAttachment),
     },
-    ownerDid
+    ownerDid,
+    asDid
   );
 
   await sessions.push(ownerDid, packed);

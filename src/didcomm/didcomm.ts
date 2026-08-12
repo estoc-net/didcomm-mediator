@@ -7,16 +7,20 @@ import type {
 } from "didcomm-node";
 import { resolveDIDCommDoc } from "./did-resolver.js";
 import type { DIDDoc, Secret } from "@estoc/did-peer";
+import type { OwnIdentity } from "../identity-core.js";
 
 /**
  * Pack and unpack with the mediator's own identity.
  *
  * Unlike didcomm-http, where every call carries its own secrets, a mediator has
- * exactly one set — its own — and every envelope it opens or seals uses them.
- * The resolvers are built once and shared.
+ * exactly one key set — its own — and every envelope it opens or seals uses it.
+ * The key set may answer to several DIDs at once (see identity-core): the
+ * context knows them all, opens envelopes addressed to any of them, and seals
+ * replies as whichever one was addressed. The resolvers are built once and
+ * shared.
  */
 
-/** The mediator's document first (never fetched), then the world. */
+/** The mediator's documents first (never fetched), then the world. */
 class ChainedResolver implements DIDResolver {
   private pinned: Map<string, DIDDoc>;
 
@@ -63,19 +67,49 @@ export interface Unpacked {
    * that grant anything must key off this, never off `from`.
    */
   verifiedFrom: string | null;
+  /**
+   * Which of the mediator's own DIDs the envelope was sealed to — the name
+   * the sender knows this mediator by, and so the name replies should carry.
+   */
+  addressedTo: string | null;
+}
+
+export interface ContextOptions {
+  /** The mediator's other active DIDs, beyond the primary. */
+  aliases?: OwnIdentity[];
+  /** Extra documents resolved without fetching — a counterparty whose DID
+   * (did:web, short-form peer:4) cannot be decoded offline. */
+  pinned?: DIDDoc[];
 }
 
 export class DIDCommContext {
+  /** Every DID this context answers to, primary first. */
+  readonly dids: string[];
   private didResolver: DIDResolver;
   private secretsResolver: SecretsResolver;
 
   constructor(
     readonly did: string,
     didDoc: DIDDoc,
-    secrets: Secret[]
+    secrets: Secret[],
+    { aliases = [], pinned = [] }: ContextOptions = {}
   ) {
-    this.didResolver = new ChainedResolver([didDoc]);
+    this.dids = [did, ...aliases.map((alias) => alias.did)];
+    this.didResolver = new ChainedResolver([
+      didDoc,
+      ...aliases.map((alias) => alias.didDoc),
+      ...pinned,
+    ]);
     this.secretsResolver = new InMemorySecretsResolver(secrets);
+  }
+
+  /**
+   * `did` if it is one of this context's own names, else the primary — what
+   * dispatch replies as when the envelope named nobody (or a name this
+   * deployment no longer answers to).
+   */
+  asOwnDid(did: string | null): string {
+    return did !== null && this.dids.includes(did) ? did : this.did;
   }
 
   async unpack(packed: string): Promise<Unpacked> {
@@ -92,21 +126,27 @@ export class DIDCommContext {
       metadata,
       from: message.from ?? null,
       verifiedFrom: didOf(metadata.encrypted_from_kid ?? metadata.sign_from),
+      addressedTo: didOf(metadata.encrypted_to_kids?.[0]),
     };
   }
 
   /**
-   * Seal a message from the mediator to `to`.
+   * Seal a message from the mediator to `to`, as `asDid` (default: the
+   * primary DID; must be one of this context's own names).
    *
    * `forward: false` — replies go back on the return route or into the
    * recipient's own inbox here; wrapping them for yet another mediator would
    * assume an infrastructure DID is itself mediated, which this one is not.
    */
-  async packEncrypted(message: IMessage, to: string): Promise<string> {
+  async packEncrypted(
+    message: IMessage,
+    to: string,
+    asDid: string = this.did
+  ): Promise<string> {
     const msg = new Message(message);
     const [packed] = await msg.pack_encrypted(
       to,
-      this.did,
+      asDid,
       null,
       this.didResolver,
       this.secretsResolver,

@@ -10,6 +10,7 @@ import { SqliteStore } from "../src/store/sqlite.js";
 
 export const TEST_CONFIG: MediatorConfig = {
   publicUrl: "https://mediator.test",
+  didMethods: ["peer2"],
   host: "127.0.0.1",
   port: 0,
   dataDir: "/nonexistent-tests-never-touch-disk",

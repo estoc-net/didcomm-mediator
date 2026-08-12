@@ -29,7 +29,7 @@ let dataDir: string;
 
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "mediator-ts-ws-test-"));
-  mediator = loadOrCreateIdentity(dataDir, TEST_CONFIG.publicUrl, () => {});
+  mediator = loadOrCreateIdentity(dataDir, TEST_CONFIG.publicUrl, "peer2", () => {});
   alice = agent("alice-live");
   server = buildServer({
     identity: mediator,

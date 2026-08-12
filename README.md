@@ -17,8 +17,9 @@ MEDIATOR_PUBLIC_URL=https://mediator.example.com docker compose up -d
 curl -s https://mediator.example.com/
 ```
 
-Set `MEDIATOR_PUBLIC_URL` **before first start**: it is encoded into the
-mediator's did:peer:2, which cannot change afterwards. The identity and the
+Set `MEDIATOR_PUBLIC_URL` **before first start**: with the default did:peer:2
+identity it is encoded into the DID itself, which cannot change afterwards
+(`MEDIATOR_DID_METHODS=web` unties them — see below). The identity and the
 message store live on the `mediator-data` volume — keep the volume, keep the
 DID; delete it and the next start mints a fresh identity.
 
@@ -30,7 +31,7 @@ WebSocket upgrades on the same path.
 
 ```sh
 wrangler d1 create mediator                    # paste database_id into wrangler.jsonc
-npm run mint-identity -- https://your-worker.example.workers.dev
+npm run mint-identity -- https://your-worker.example.workers.dev  # optional 2nd arg: peer2|peer4|web
 wrangler secret put MEDIATOR_IDENTITY          # paste the JSON the mint printed
 wrangler deploy
 npm run smoke -- https://your-worker.example.workers.dev
@@ -44,6 +45,32 @@ outlive every redeploy. Locally, `wrangler dev` works the same way with
 `npm run smoke -- <url>` drives a real client through the whole surface —
 grant, keylist, anonymous forward, pickup, WebSocket live delivery — against
 any running mediator, whichever target it is.
+
+## The mediator's DIDs
+
+One key set, up to three names — each method's DID is a deterministic function
+of the stored secrets and the public URL:
+
+- **`peer2`** (default) — self-contained: the whole document, endpoint
+  included, is encoded in the DID and resolves offline. Works anywhere,
+  localhost included. Changing the URL or the keys means a new DID.
+- **`peer4`** — the same trade-offs in did:peer:4's long-form encoding.
+- **`web`** — the DID *is* the domain: `https://mediator.example.com` becomes
+  `did:web:mediator.example.com`, and keys and endpoints live in the document
+  served at `/.well-known/did.json` (also `/did.json`), so both can rotate
+  without changing the DID. Requires an https public URL — resolvers fetch
+  did.json over https, nothing else — and clients that resolve did:web.
+
+Which names are active is configuration, not storage: `MEDIATOR_DID_METHODS`
+is an ordered list (`peer2,web`). The first is the primary — what GET / and
+the invitation advertise, and what a first boot mints — and the rest are
+aliases the mediator answers to equally: a client is always answered *as the
+DID it addressed*, and its mediation grant hands out that same DID for
+routing. Flipping the order later changes what new clients see while everyone
+bound to the other name keeps working — the migration path from a peer DID to
+did:web without stranding anyone. (The peer aliases are still the keys in
+encoded form, so rotating a did:web identity's keys renames them; the alias is
+a bridge, not a place to stay.)
 
 ## Protocols
 
@@ -87,6 +114,7 @@ requires an authcrypt envelope, and the proven sender DID *is* the account.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `MEDIATOR_PUBLIC_URL` | — (required) | Public URL, baked into the DID on first start |
+| `MEDIATOR_DID_METHODS` | `peer2` | Ordered list of active methods (`peer2,peer4,web`); first = primary, minted on first start |
 | `MEDIATOR_PORT` / `MEDIATOR_HOST` | `8080` / `0.0.0.0` | Listen address |
 | `MEDIATOR_DATA_DIR` | `/data` in Docker, `./data` otherwise | Identity + SQLite |
 | `MEDIATOR_OPEN_REGISTRATION` | `true` | Grant mediation to any DID that asks |

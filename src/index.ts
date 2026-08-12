@@ -8,7 +8,11 @@ import { SqliteStore } from "./store/sqlite.js";
 const PURGE_INTERVAL_MS = 60 * 60 * 1000;
 
 const config = configFromEnv();
-const identity = loadOrCreateIdentity(config.dataDir, config.publicUrl);
+const identity = loadOrCreateIdentity(
+  config.dataDir,
+  config.publicUrl,
+  config.didMethods
+);
 const store = new SqliteStore(join(config.dataDir, "mediator.db"), {
   messageTtlSeconds: config.messageTtlSeconds,
   maxMessagesPerAccount: config.maxMessagesPerAccount,

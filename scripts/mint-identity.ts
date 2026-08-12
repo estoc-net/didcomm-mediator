@@ -1,3 +1,4 @@
+import { DID_METHODS, type DidMethod } from "../src/identity-core.js";
 import { mintStoredIdentity } from "../src/identity.js";
 
 /**
@@ -7,13 +8,23 @@ import { mintStoredIdentity } from "../src/identity.js";
  * and handed over as a secret.
  */
 
-const publicUrl = process.argv[2];
-if (publicUrl === undefined || !publicUrl.startsWith("http")) {
-  console.error("usage: npm run mint-identity -- <public-url>");
-  console.error("  e.g. npm run mint-identity -- https://mediator.example.com");
+function usage(): never {
+  console.error(
+    `usage: npm run mint-identity -- <public-url> [${DID_METHODS.join("|")}]`
+  );
+  console.error("  e.g. npm run mint-identity -- https://mediator.example.com web");
   process.exit(1);
 }
 
-const identity = mintStoredIdentity(publicUrl);
+const publicUrl = process.argv[2];
+const method = process.argv[3] ?? "peer2";
+if (publicUrl === undefined || !publicUrl.startsWith("http")) {
+  usage();
+}
+if (!(DID_METHODS as readonly string[]).includes(method)) {
+  usage();
+}
+
+const identity = mintStoredIdentity(publicUrl, method as DidMethod);
 console.error(`DID: ${identity.did}\n`);
 console.log(JSON.stringify(identity));

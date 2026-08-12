@@ -212,7 +212,7 @@ async function establishMediation(agent: DemoAgent): Promise<void> {
 
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "mediator-ts-demo-test-"));
-  mediator = loadOrCreateIdentity(dataDir, BASE, () => {});
+  mediator = loadOrCreateIdentity(dataDir, BASE, "peer2", () => {});
   server = buildServer({
     identity: mediator,
     store: memoryStore(),
