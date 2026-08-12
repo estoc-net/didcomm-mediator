@@ -1,4 +1,4 @@
-# didcomm-mediator-ts
+# didcomm-mediator
 
 A DIDComm v2 mediator anyone can run with one command. TypeScript, standard
 protocols over plain HTTP/WebSocket transport, no accounts to create and no

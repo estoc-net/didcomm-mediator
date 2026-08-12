@@ -1,5 +1,5 @@
 {
-  "name": "didcomm-mediator-ts",
+  "name": "didcomm-mediator",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.workers.json",
-    "docker:build": "docker build -t ghcr.io/estoc-net/didcomm-mediator-ts .",
+    "docker:build": "docker build -t ghcr.io/estoc-net/didcomm-mediator .",
     "mint-identity": "tsx scripts/mint-identity.ts",
     "dev:workers": "wrangler dev",
     "smoke": "tsx scripts/smoke.ts"
