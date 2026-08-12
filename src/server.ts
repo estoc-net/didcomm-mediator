@@ -94,7 +94,11 @@ export function buildServer({
           if (socket.readyState !== socket.OPEN) {
             return false;
           }
-          socket.send(packed);
+          // As a binary frame: browsers hand a text frame to onmessage as a
+          // string, and the DIF demo (following Affinidi's lead) calls
+          // `event.data.text()` — which only a Blob has, and only a binary
+          // frame arrives as one.
+          socket.send(Buffer.from(packed));
           return true;
         },
       };

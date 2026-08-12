@@ -326,7 +326,12 @@ describe("didcomm-demo wire behavior", () => {
       }
     );
     const statusFrame = new Promise<string>((resolve, reject) => {
-      ws.once("message", (data) => resolve(data.toString()));
+      ws.once("message", (data, isBinary) => {
+        // The demo reads frames with `event.data.text()`, which only exists
+        // on a Blob — and browsers only deliver a Blob for binary frames.
+        expect(isBinary).toBe(true);
+        resolve(data.toString());
+      });
       setTimeout(() => reject(new Error("no status frame")), 5000);
     });
     ws.send(live);
@@ -336,7 +341,10 @@ describe("didcomm-demo wire behavior", () => {
 
     // Bob writes while Alice's socket is open; the delivery must be pushed.
     const pushFrame = new Promise<string>((resolve, reject) => {
-      ws.once("message", (data) => resolve(data.toString()));
+      ws.once("message", (data, isBinary) => {
+        expect(isBinary).toBe(true);
+        resolve(data.toString());
+      });
       setTimeout(() => reject(new Error("no live delivery push")), 5000);
     });
     const { packed, endpoint } = await demoPack(bob, alice.did as string, bob.did as string, {
