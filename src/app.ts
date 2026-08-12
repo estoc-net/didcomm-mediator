@@ -121,8 +121,6 @@ export function buildApp({
     })
   );
 
-  // The path Affinidi clients look at, and a convenient one for humans.
-  app.get("/.well-known/did", (c) => c.json(describe()));
   app.get("/health", (c) => c.json({ status: "ok" }));
 
   return app;

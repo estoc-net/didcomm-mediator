@@ -14,7 +14,7 @@ Two deployment targets share one protocol implementation:
 
 ```sh
 MEDIATOR_PUBLIC_URL=https://mediator.example.com docker compose up -d
-curl -s https://mediator.example.com/.well-known/did
+curl -s https://mediator.example.com/
 ```
 
 Set `MEDIATOR_PUBLIC_URL` **before first start**: it is encoded into the
@@ -66,12 +66,12 @@ knows:
 - `GET /` + WebSocket upgrade — same dispatch over a socket; enabling
   live delivery (`live-delivery-change`) turns the socket into a push channel
   for incoming forwards.
-- `GET /.well-known/did` — the mediator's DID, its out-of-band invitation
-  URL, and the protocol list.
+- `GET /` (plain) — the mediator's DID, its out-of-band invitation URL, and
+  the protocol list as JSON; a browser (`Accept: text/html`) gets a
+  human-readable page instead.
 - `GET /invitation` — the out-of-band 2.0 invitation as a plaintext JWM. The
   same invitation, base64url-encoded, rides the `?_oob=` parameter of the
   invitation URL — the string to put in a QR code for any standard wallet.
-  A browser opening that URL gets a human-readable page instead of JSON.
 - `GET /health`.
 
 Anonymous (anoncrypt) envelopes may only carry `forward` — the outer envelope

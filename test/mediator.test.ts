@@ -349,10 +349,6 @@ describe("supporting protocols", () => {
     expect(res.status).toBe(400);
   });
 
-  it("publishes its DID", async () => {
-    const res = await app.request("/.well-known/did");
-    expect(((await res.json()) as { did: string }).did).toBe(mediator.did);
-  });
 });
 
 describe("out-of-band/2.0", () => {
@@ -380,7 +376,7 @@ describe("out-of-band/2.0", () => {
 
   it("publishes an invitation URL whose _oob decodes to the invitation", async () => {
     const { invitationUrl } = (await (
-      await app.request("/.well-known/did")
+      await app.request("/")
     ).json()) as { invitationUrl: string };
     expect(invitationUrl.startsWith(TEST_CONFIG.publicUrl)).toBe(true);
 

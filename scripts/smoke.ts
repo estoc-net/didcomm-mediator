@@ -43,7 +43,7 @@ function sameJson(a: unknown, b: unknown): boolean {
 }
 
 const { did: mediatorDid, invitationUrl } = (await (
-  await fetch(`${base}/.well-known/did`)
+  await fetch(base)
 ).json()) as { did: string; invitationUrl: string };
 console.log(`mediator: ${mediatorDid}`);
 
