@@ -29,8 +29,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "mediator",
-      "database_id": "3cb0373b-496b-4f85-99c8-2e151a24b6eb"
+      "database_name": "didcomm-mediator",
+      "database_id": "e57679e6-e700-46e9-abbf-a9b529a5a67d"
     }
   ],
   // Hourly purge of expired messages.
