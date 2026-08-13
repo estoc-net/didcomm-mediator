@@ -26,6 +26,10 @@
     "bindings": [{ "name": "INBOX", "class_name": "InboxHub" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["InboxHub"] }],
+  // web stays the primary (advertised) name; the did:peer:2 alias answers
+  // for clients whose correspondents cannot use a did:web routing DID —
+  // demo.didcomm.org's resolver mangles JWK-material did:web documents.
+  "vars": { "MEDIATOR_DID_METHODS": "web,peer2" },
   "d1_databases": [
     {
       "binding": "DB",
