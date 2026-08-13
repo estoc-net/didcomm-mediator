@@ -193,7 +193,55 @@ function resolveDidPeer4(did: string): ResolveResult {
   }
 }
 
+/**
+ * The did.json URL of a loopback did:web, or null for any other host.
+ * web-did-resolver only ever fetches https, which is right for the world at
+ * large but leaves `wrangler dev` (plain http on localhost) unresolvable —
+ * and a loopback name was never reachable by anyone else anyway.
+ */
+function loopbackDidWebUrl(did: string): string | null {
+  const [host, ...segments] = did
+    .slice("did:web:".length)
+    .split(":")
+    .map((part) => decodeURIComponent(part));
+
+  const hostname = host.split(":")[0];
+  if (hostname !== "localhost" && hostname !== "127.0.0.1") {
+    return null;
+  }
+
+  const path =
+    segments.length === 0
+      ? "/.well-known/did.json"
+      : `/${segments.join("/")}/did.json`;
+  return `http://${host}${path}`;
+}
+
 async function resolveDidWeb(did: string): Promise<ResolveResult> {
+  const loopback = loopbackDidWebUrl(did);
+  if (loopback !== null) {
+    try {
+      const response = await fetch(loopback);
+      if (!response.ok) {
+        throw new Error(`GET ${loopback} answered ${response.status}`);
+      }
+      return {
+        didDocument: (await response.json()) as Record<string, unknown>,
+        didDocumentMetadata: {},
+        didResolutionMetadata: { contentType: "application/did+ld+json" },
+      };
+    } catch (err) {
+      return {
+        didDocument: null,
+        didDocumentMetadata: {},
+        didResolutionMetadata: {
+          error: "notFound",
+          message: err instanceof Error ? err.message : String(err),
+        },
+      };
+    }
+  }
+
   const resolver = getDidWebResolver();
   const result = await resolver.resolve(did);
   return {

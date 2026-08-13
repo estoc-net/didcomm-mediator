@@ -17,13 +17,16 @@ export interface MediatorPolicy {
 }
 
 export interface MediatorConfig extends MediatorPolicy {
-  /** The URL agents reach this mediator at; baked into the DID on first boot. */
+  /**
+   * The URL agents reach this mediator at. Every DID derives from the stored
+   * keys and this URL, so changing it renames the mediator (the keys stay).
+   */
   publicUrl: string;
   /**
    * The active DID methods, in order — the first is the primary (advertised)
-   * DID and what a first boot mints; the rest are aliases the mediator
-   * answers to equally. All derive from the one stored key set. Empty means
-   * unspecified: follow the stored DID's method (a first boot mints peer2).
+   * DID; the rest are aliases the mediator answers to equally. All derive
+   * from the one stored key set. Empty means the target's default (Node:
+   * peer2, Workers: web).
    */
   didMethods: DidMethod[];
   host: string;
@@ -38,8 +41,7 @@ function env(name: string): string | undefined {
 
 /**
  * A comma-separated, ordered method list — "peer2,web" — shared with Workers.
- * Unset means unspecified (empty list): an existing identity follows its
- * stored DID's method, and a first boot mints the default (peer2).
+ * Unset means unspecified (empty list): each target applies its own default.
  */
 export function parseDidMethods(value: string | undefined): DidMethod[] {
   if (value === undefined) {
@@ -60,8 +62,8 @@ export function configFromEnv(): MediatorConfig {
   const publicUrl = env("MEDIATOR_PUBLIC_URL");
   if (publicUrl === undefined) {
     throw new Error(
-      "MEDIATOR_PUBLIC_URL must be set before first start — it is encoded " +
-        "into the mediator's DID and cannot change afterwards"
+      "MEDIATOR_PUBLIC_URL must be set — the mediator's DIDs derive from it, " +
+        "and changing it later renames the mediator"
     );
   }
 

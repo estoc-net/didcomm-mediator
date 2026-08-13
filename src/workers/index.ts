@@ -2,7 +2,7 @@ import type { Hono } from "hono";
 
 import { buildApp } from "../app.js";
 import type { LiveSink } from "../protocols/types.js";
-import { depsFromEnv, type Env } from "./env.js";
+import { depsForOrigin, storeFromEnv, type Env } from "./env.js";
 
 export { InboxHub } from "./inbox-hub.js";
 
@@ -11,20 +11,32 @@ export { InboxHub } from "./inbox-hub.js";
  * the isolate is stateless — WebSocket upgrades are handed to the inbox
  * Durable Object wholesale, and live-delivery pushes for messages that arrive
  * over plain HTTP travel to it as one internal call.
+ *
+ * There is one app per origin, not one per isolate: the deployment is
+ * URL-agnostic, answering every host that routes to it as that host's own
+ * did:web, so the identity — and the app built around it — is a function of
+ * the origin the request arrived on.
  */
 
 function hub(env: Env) {
   return env.INBOX.get(env.INBOX.idFromName("hub"));
 }
 
-let cachedApp: Hono | null = null;
+const apps = new Map<string, Promise<Hono>>();
 
-function appFor(env: Env): Hono {
-  if (cachedApp !== null) {
-    return cachedApp;
+function appFor(env: Env, origin: string): Promise<Hono> {
+  let app = apps.get(origin);
+  if (app === undefined) {
+    app = buildAppFor(env, origin);
+    // A failed build (say, D1 unreachable) must not poison the origin.
+    app.catch(() => apps.delete(origin));
+    apps.set(origin, app);
   }
+  return app;
+}
 
-  const { ctx, store, policy, identity } = depsFromEnv(env);
+async function buildAppFor(env: Env, origin: string): Promise<Hono> {
+  const { ctx, store, policy, identity } = await depsForOrigin(env, origin);
 
   const sink: LiveSink = {
     async wantsPush(ownerDid) {
@@ -41,7 +53,7 @@ function appFor(env: Env): Hono {
     },
   };
 
-  cachedApp = buildApp({
+  return buildApp({
     ctx,
     store,
     policy,
@@ -50,19 +62,19 @@ function appFor(env: Env): Hono {
     webDidDoc: identity.webDidDoc,
     log: (msg, err) => console.warn(msg, err),
   });
-  return cachedApp;
 }
 
 export default {
-  fetch(request: Request, env: Env): Response | Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     if ((request.headers.get("upgrade") ?? "").toLowerCase() === "websocket") {
       return hub(env).fetch(request);
     }
-    return appFor(env).fetch(request);
+    const app = await appFor(env, new URL(request.url).origin);
+    return app.fetch(request);
   },
 
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    const purged = await depsFromEnv(env).store.purgeExpired();
+    const purged = await storeFromEnv(env).purgeExpired();
     if (purged > 0) {
       console.log(`purged ${purged} expired messages`);
     }

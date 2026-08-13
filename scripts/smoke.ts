@@ -5,7 +5,7 @@ import WebSocket from "ws";
 
 import { DIDCommContext } from "../src/didcomm/didcomm.js";
 import { resolveDIDCommDoc } from "../src/didcomm/did-resolver.js";
-import { mintIdentity } from "../src/identity.js";
+import { mintIdentity } from "../src/identity-core.js";
 
 /**
  * Drive a full client flow against a *running* mediator — the deploy
@@ -65,7 +65,7 @@ console.log(`mediator: ${mediatorDid}`);
   );
 }
 
-const alice = mintIdentity("https://smoke-alice.test/didcomm");
+const alice = await mintIdentity("https://smoke-alice.test/didcomm");
 const ctx = new DIDCommContext(alice.did, alice.didDoc, alice.secrets);
 
 function plaintext(type: string, body: Record<string, unknown>): IMessage {

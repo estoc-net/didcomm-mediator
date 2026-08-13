@@ -6,7 +6,7 @@ import type { Server } from "node:http";
 import { buildApp } from "./app.js";
 import type { MediatorConfig } from "./config.js";
 import { DIDCommContext } from "./didcomm/didcomm.js";
-import type { MediatorIdentity } from "./identity.js";
+import type { MediatorIdentity } from "./identity-core.js";
 import { dispatch } from "./protocols/dispatch.js";
 import type { Session } from "./protocols/types.js";
 import type { MediationStore } from "./store/types.js";

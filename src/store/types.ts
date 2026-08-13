@@ -26,6 +26,19 @@ export interface RecipientPage {
 }
 
 export interface MediationStore {
+  /**
+   * The mediator's stored identity secrets as JSON, or null before first
+   * mint. The identity lives in the same database as everything else on
+   * purpose: one file (or one D1 database) is the whole mediator.
+   */
+  loadIdentity(): Promise<string | null>;
+  /**
+   * Store the secrets unless a row already exists, and return the row that
+   * won — insert-if-absent, so concurrent first contacts all end up holding
+   * the same keys no matter whose mint got there first.
+   */
+  initIdentity(secretsJson: string): Promise<string>;
+
   grantMediation(did: string): Promise<void>;
   revokeMediation(did: string): Promise<void>;
   isMediated(did: string): Promise<boolean>;

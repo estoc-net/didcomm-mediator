@@ -1,8 +1,6 @@
 import bs58 from "bs58";
 import {
   base64urlToBytes,
-  isPeerDID2,
-  isPeerDID4,
   resolveLongForm,
   resolvePeer2,
   toDIDCommDIDDoc,
@@ -12,36 +10,25 @@ import {
 } from "@estoc/did-peer";
 import type { DIDDoc, PeerDocument, Secret } from "@estoc/did-peer";
 
+import type { MediationStore } from "./store/types.js";
+
 /**
- * The runtime-independent half of the mediator's identity: the stored shape
- * and its expansion into a usable one. Minting and disk persistence live in
- * identity.ts (Node only — Workers receive a StoredIdentity as a secret and
- * never mint).
+ * The mediator's identity, whole: what is stored is nothing but two private
+ * keys (X25519 + Ed25519, as relative-id Secrets in the store's identity
+ * table), and every name is a pure function of those keys, a public URL, and
+ * a method — did:peer:2 encodes the public keys and endpoints, did:peer:4
+ * hashes the document, did:web is the domain itself.
  *
- * One key set, up to three names. Every method's DID is a deterministic
- * function of the stored secrets and public URL — did:peer:2 encodes the
- * public keys and endpoints, did:peer:4 hashes the document, did:web is the
- * domain — so a mediator can answer to several DIDs at once without storing
- * more than one. Which methods are active is configuration
- * (MEDIATOR_DID_METHODS), not storage; the identity file never migrates.
+ * No DID and no URL is ever persisted. Which methods are active is
+ * configuration (MEDIATOR_DID_METHODS); which URL the names bind to is the
+ * caller's — Node passes its configured public URL, Workers pass each
+ * request's own origin, which is what lets one Workers deployment answer as
+ * did:web:<host> for every host that routes to it. Keep the store's identity
+ * row (and, for the peer methods, the URL), keep the DID.
  */
 
 export const DID_METHODS = ["peer2", "peer4", "web"] as const;
 export type DidMethod = (typeof DID_METHODS)[number];
-
-/** The method a DID belongs to, or null for anything the mediator cannot be. */
-export function methodOf(did: string): DidMethod | null {
-  if (isPeerDID2(did)) {
-    return "peer2";
-  }
-  if (isPeerDID4(did)) {
-    return "peer4";
-  }
-  if (did.startsWith("did:web:")) {
-    return "web";
-  }
-  return null;
-}
 
 /** One of the mediator's own names: a DID and the document behind it. */
 export interface OwnIdentity {
@@ -67,12 +54,68 @@ export interface MediatorIdentity {
   webDidDoc: Record<string, unknown> | null;
 }
 
-/** What gets persisted (a file on Node, a secret on Workers). */
-export interface StoredIdentity {
-  did: string;
-  publicUrl: string;
-  /** Relative ids (#key-1…), absolutized against each active DID on load. */
-  secrets: Secret[];
+async function jwkKeyPair(
+  algorithm: "Ed25519" | "X25519"
+): Promise<{ x: string; d: string }> {
+  const usages: KeyUsage[] =
+    algorithm === "Ed25519" ? ["sign", "verify"] : ["deriveBits"];
+  const pair = (await crypto.subtle.generateKey(
+    algorithm,
+    true,
+    usages
+  )) as CryptoKeyPair;
+  const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
+
+  if (typeof jwk.x !== "string" || typeof jwk.d !== "string") {
+    throw new Error(`A ${algorithm} key did not export as a JWK`);
+  }
+
+  return { x: jwk.x, d: jwk.d };
+}
+
+/**
+ * A fresh key set — WebCrypto, so the same code mints on Node and on workerd.
+ * #key-1 is the X25519 key and #key-2 the Ed25519 across every method, so one
+ * set of secrets fits whichever documents the DIDs expand to.
+ */
+export async function mintSecrets(): Promise<Secret[]> {
+  const e = await jwkKeyPair("X25519");
+  const v = await jwkKeyPair("Ed25519");
+
+  return [
+    {
+      id: "#key-1",
+      type: "JsonWebKey2020",
+      privateKeyJwk: { kty: "OKP", crv: "X25519", x: e.x, d: e.d },
+    },
+    {
+      id: "#key-2",
+      type: "JsonWebKey2020",
+      privateKeyJwk: { kty: "OKP", crv: "Ed25519", x: v.x, d: v.d },
+    },
+  ];
+}
+
+/**
+ * The store's identity row, minting it if this is first contact. Concurrent
+ * first contacts race benignly: initIdentity is insert-if-absent and returns
+ * the row that won, so every caller ends up holding the same keys.
+ */
+export async function loadOrCreateSecrets(
+  store: MediationStore,
+  log: (msg: string) => void = () => {}
+): Promise<Secret[]> {
+  const existing = await store.loadIdentity();
+  if (existing !== null) {
+    return JSON.parse(existing) as Secret[];
+  }
+
+  const minted = JSON.stringify(await mintSecrets());
+  const winner = await store.initIdentity(minted);
+  if (winner === minted) {
+    log("Minted mediator identity keys");
+  }
+  return JSON.parse(winner) as Secret[];
 }
 
 /** ws(s):// twin of the public URL — the WebSocket upgrade lives on the same path. */
@@ -95,15 +138,18 @@ export function endpointsOf(publicUrl: string): string[] {
  *
  * https is a hard requirement, not a SHOULD — resolvers (web-did-resolver
  * included) only ever fetch `https://…/did.json`, so a did:web minted from an
- * http URL would be unresolvable by everyone else. Local development belongs
- * to the peer methods.
+ * http URL would be unresolvable by everyone else. The one exception is
+ * localhost: `wrangler dev` serves plain http, our own resolver knows to
+ * fetch such a DID over http, and a loopback name was never resolvable by
+ * the outside world anyway.
  */
 export function didWebFromUrl(publicUrl: string): string {
   const url = new URL(publicUrl);
-  if (url.protocol !== "https:") {
+  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
     throw new Error(
       `did:web requires an https public URL (got ${publicUrl}); ` +
-        "use peer2 or peer4 for local development"
+        "use peer2 or peer4 for non-loopback http"
     );
   }
 
@@ -144,9 +190,9 @@ function multibase(curve: keyof typeof MULTICODEC, x: string): string {
  * appearance, so #key-1 is the X25519 key and #key-2 the Ed25519, matching
  * the secrets' own numbering — plus one .S per endpoint.
  *
- * This encoding is an invariant, not an implementation detail: the DID of an
- * existing identity is re-derived from its secrets whenever peer2 rides as an
- * alias, so any change here would silently rename deployed mediators.
+ * This encoding is an invariant, not an implementation detail: every DID is
+ * re-derived from the stored secrets on every boot, so any change here would
+ * silently rename deployed mediators.
  */
 function encodePeer2(secrets: Secret[], endpoints: string[]): string {
   const byCurve = (crv: string): string => {
@@ -211,12 +257,12 @@ export function didDocumentSkeleton(
  * document's `id` equal the DID it derived, and not every consumer absolutizes
  * relative fragments correctly.
  */
-export function webDidDocument(stored: StoredIdentity): Record<string, unknown> {
-  const did = didWebFromUrl(stored.publicUrl);
-  const skeleton = didDocumentSkeleton(
-    stored.secrets,
-    endpointsOf(stored.publicUrl)
-  );
+export function webDidDocument(
+  secrets: Secret[],
+  publicUrl: string
+): Record<string, unknown> {
+  const did = didWebFromUrl(publicUrl);
+  const skeleton = didDocumentSkeleton(secrets, endpointsOf(publicUrl));
   const absolute = (id: unknown) => `${did}${id}`;
 
   return {
@@ -241,7 +287,7 @@ export function webDidDocument(stored: StoredIdentity): Record<string, unknown> 
   };
 }
 
-/** Derive the DID a method gives this key set and URL — minting and aliasing. */
+/** Derive the DID a method gives this key set and URL. */
 export function deriveDid(
   secrets: Secret[],
   publicUrl: string,
@@ -265,55 +311,50 @@ export function deriveDid(
 }
 
 /**
- * The stored DID is the source of truth for its own method — derivation must
- * agree with it, but trusting the stored string means an encoding drift shows
- * up as a loud test failure, not as a renamed production mediator.
- */
-function didForMethod(stored: StoredIdentity, method: DidMethod): string {
-  return methodOf(stored.did) === method
-    ? stored.did
-    : deriveDid(stored.secrets, stored.publicUrl, method);
-}
-
-/**
  * The W3C-shaped document behind one of the mediator's DIDs. The peer DIDs
- * carry their own; did:web's is rebuilt from the stored keys and URL, never
- * fetched — the mediator does not dial itself to learn who it is.
+ * carry their own; did:web's is rebuilt from the keys and URL, never fetched —
+ * the mediator does not dial itself to learn who it is.
  */
-function documentOf(stored: StoredIdentity, did: string): PeerDocument {
-  switch (methodOf(did)) {
+function documentOf(
+  secrets: Secret[],
+  publicUrl: string,
+  method: DidMethod,
+  did: string
+): PeerDocument {
+  switch (method) {
     case "peer2":
       return resolvePeer2(did);
     case "peer4":
-      // The long form; a short form throws here, and rightly — it carries no
-      // document, so an identity stored that way could never sign anything.
       return resolveLongForm(did);
     case "web":
-      return webDidDocument(stored);
+      return webDidDocument(secrets, publicUrl);
     default:
-      throw new Error(`Unsupported mediator DID method: ${did}`);
+      throw new Error(`Unsupported mediator DID method: ${String(method)}`);
   }
 }
 
 /**
- * Expand a stored identity into every active name. `methods` is ordered —
- * the first entry is the primary (advertised) DID; when omitted, the stored
- * DID's own method is the only active one, which is what a deployment that
- * never heard of aliases gets.
+ * Expand a key set into every active name at one URL. `methods` is ordered —
+ * the first entry is the primary (advertised) DID. Deployments choose their
+ * own default (Node: peer2, which works on any URL; Workers: web, whose name
+ * follows the request host), so an empty list is a caller bug, not a choice.
  */
-export function toIdentity(
-  stored: StoredIdentity,
-  methods: DidMethod[] = []
+export function identityFor(
+  secrets: Secret[],
+  publicUrl: string,
+  methods: DidMethod[]
 ): MediatorIdentity {
-  const storedMethod = methodOf(stored.did);
-  if (storedMethod === null) {
-    throw new Error(`Unsupported mediator DID method: ${stored.did}`);
+  if (methods.length === 0) {
+    throw new Error("identityFor needs at least one active DID method");
   }
 
-  const active = methods.length > 0 ? [...new Set(methods)] : [storedMethod];
+  const active = [...new Set(methods)];
   const own: OwnIdentity[] = active.map((method) => {
-    const did = didForMethod(stored, method);
-    return { did, didDoc: toDIDCommDIDDoc(documentOf(stored, did)) };
+    const did = deriveDid(secrets, publicUrl, method);
+    return {
+      did,
+      didDoc: toDIDCommDIDDoc(documentOf(secrets, publicUrl, method, did)),
+    };
   });
 
   return {
@@ -321,16 +362,28 @@ export function toIdentity(
     didDoc: own[0].didDoc,
     aliases: own.slice(1),
     dids: own.map((identity) => identity.did),
-    publicUrl: stored.publicUrl,
-    webDidDoc: active.includes("web") ? webDidDocument(stored) : null,
+    publicUrl,
+    webDidDoc: active.includes("web") ? webDidDocument(secrets, publicUrl) : null,
     // didcomm-rust matches a secret to a verification method by id, and the
     // converted documents' ids are absolute — so each private key appears
     // once per active DID, under that DID's absolute id.
     secrets: own.flatMap(({ did }) =>
-      stored.secrets.map((secret) => ({
+      secrets.map((secret) => ({
         ...secret,
         id: `${did}${secret.id}`,
       }))
     ),
   };
+}
+
+function asList(methods: DidMethod | DidMethod[]): DidMethod[] {
+  return Array.isArray(methods) ? methods : [methods];
+}
+
+/** A fresh identity in one call — the test suite's client factory. */
+export async function mintIdentity(
+  publicUrl: string,
+  methods: DidMethod | DidMethod[] = "peer2"
+): Promise<MediatorIdentity> {
+  return identityFor(await mintSecrets(), publicUrl, asList(methods));
 }

@@ -1,14 +1,43 @@
 # didcomm-mediator
 
-A DIDComm v2 mediator anyone can run with one command. TypeScript, standard
-protocols over plain HTTP/WebSocket transport, no accounts to create and no
-vendor SDK to adopt — authentication is the envelope itself.
+A DIDComm v2 mediator anyone can run with one command — or one click:
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/estoc-net/didcomm-mediator)
+
+TypeScript, standard protocols over plain HTTP/WebSocket transport, no
+accounts to create and no vendor SDK to adopt — authentication is the
+envelope itself.
 
 Two deployment targets share one protocol implementation:
 
-- **Node + Docker** — one process, SQLite on a volume.
 - **Cloudflare Workers** — D1 for storage, a Durable Object holding the live
-  WebSockets; `wrangler deploy` and there is no server at all.
+  WebSockets; there is no server, no secret, and no URL to configure at all.
+- **Node + Docker** — one process, SQLite on a volume.
+
+Either way the mediator's whole identity is two private keys in its own
+database, minted on first contact; every DID it answers to is derived from
+those keys, so **keep the database, keep the mediator**.
+
+## Quick start (Cloudflare Workers)
+
+Click the button above — it clones this repo into your GitHub account,
+provisions the D1 database and Durable Object, and deploys. Or by hand:
+
+```sh
+wrangler d1 create mediator        # paste database_id into wrangler.jsonc
+wrangler deploy
+npm run smoke -- https://your-worker.example.workers.dev
+```
+
+The Workers deployment is URL-agnostic: it answers every host that routes to
+it as that host's own `did:web` — `your-worker.example.workers.dev` on day
+one, and if you later attach a custom domain in the dashboard, that domain
+becomes a second, equally live DID off the same keys. Locally, `wrangler dev`
+serves `did:web:localhost%3A8787` the same way.
+
+`npm run smoke -- <url>` drives a real client through the whole surface —
+grant, keylist, anonymous forward, pickup, WebSocket live delivery — against
+any running mediator, whichever target it is.
 
 ## Quick start (Docker)
 
@@ -17,65 +46,46 @@ MEDIATOR_PUBLIC_URL=https://mediator.example.com docker compose up -d
 curl -s https://mediator.example.com/
 ```
 
-Set `MEDIATOR_PUBLIC_URL` **before first start**: with the default did:peer:2
-identity it is encoded into the DID itself, which cannot change afterwards
-(`MEDIATOR_DID_METHODS=web` unties them — see below). The identity and the
-message store live on the `mediator-data` volume — keep the volume, keep the
-DID; delete it and the next start mints a fresh identity.
+On Node the public URL is configuration (`MEDIATOR_PUBLIC_URL`), and the
+default method is did:peer:2, which works on any URL, localhost included —
+but the DID is derived from the keys *and* the URL, so changing the URL
+renames the mediator (the keys stay). Keep the `mediator-data` volume and the
+URL, keep the DID; delete the volume and the next start mints fresh keys.
 
 TLS is out of scope: put any reverse proxy (Caddy, nginx) in front and point
 `MEDIATOR_PUBLIC_URL` at the public HTTPS address. The proxy must also pass
 WebSocket upgrades on the same path.
 
-## Quick start (Cloudflare Workers)
-
-```sh
-wrangler d1 create mediator                    # paste database_id into wrangler.jsonc
-npm run mint-identity -- https://your-worker.example.workers.dev  # optional 2nd arg: peer2|peer4|web
-wrangler secret put MEDIATOR_IDENTITY          # paste the JSON the mint printed
-wrangler deploy
-npm run smoke -- https://your-worker.example.workers.dev
-```
-
-The identity is minted once, by you, and handed over as a secret — a Workers
-deploy must never mint its own, because the public URL (and so the DID) has to
-outlive every redeploy. Locally, `wrangler dev` works the same way with
-`MEDIATOR_IDENTITY='<json>'` in `.dev.vars`.
-
-`wrangler.jsonc` is per-deployment config: besides pasting your `database_id`,
-replace `routes.pattern` (ours is `mediator.estoc.dev`) with your own domain,
-or delete `routes` to serve from the workers.dev URL — either way it must
-match the URL the identity was minted for.
-
-`npm run smoke -- <url>` drives a real client through the whole surface —
-grant, keylist, anonymous forward, pickup, WebSocket live delivery — against
-any running mediator, whichever target it is.
-
 ## The mediator's DIDs
 
 One key set, up to three names — each method's DID is a deterministic function
-of the stored secrets and the public URL:
+of the stored keys and a public URL:
 
-- **`peer2`** (default) — self-contained: the whole document, endpoint
+- **`peer2`** (Node default) — self-contained: the whole document, endpoint
   included, is encoded in the DID and resolves offline. Works anywhere,
   localhost included. Changing the URL or the keys means a new DID.
 - **`peer4`** — the same trade-offs in did:peer:4's long-form encoding.
-- **`web`** — the DID *is* the domain: `https://mediator.example.com` becomes
-  `did:web:mediator.example.com`, and keys and endpoints live in the document
-  served at `/.well-known/did.json` (also `/did.json`), so both can rotate
-  without changing the DID. Requires an https public URL — resolvers fetch
-  did.json over https, nothing else — and clients that resolve did:web.
+- **`web`** (Workers default) — the DID *is* the domain:
+  `https://mediator.example.com` becomes `did:web:mediator.example.com`, and
+  keys and endpoints live in the document served at `/.well-known/did.json`
+  (also `/did.json`), so both can rotate without changing the DID. Requires
+  an https public URL — resolvers fetch did.json over https, nothing else —
+  and clients that resolve did:web.
 
 Which names are active is configuration, not storage: `MEDIATOR_DID_METHODS`
 is an ordered list (`peer2,web`). The first is the primary — what GET / and
-the invitation advertise, and what a first boot mints — and the rest are
-aliases the mediator answers to equally: a client is always answered *as the
-DID it addressed*, and its mediation grant hands out that same DID for
-routing. Flipping the order later changes what new clients see while everyone
-bound to the other name keeps working — the migration path from a peer DID to
-did:web without stranding anyone. (The peer aliases are still the keys in
-encoded form, so rotating a did:web identity's keys renames them; the alias is
-a bridge, not a place to stay.)
+the invitation advertise — and the rest are aliases the mediator answers to
+equally: a client is always answered *as the DID it addressed*, and its
+mediation grant hands out that same DID for routing. Flipping the order later
+changes what new clients see while everyone bound to the other name keeps
+working — the migration path from a peer DID to did:web without stranding
+anyone. (The peer aliases are still the keys in encoded form, so rotating a
+did:web identity's keys renames them; the alias is a bridge, not a place to
+stay.)
+
+On Workers the URL half of every derivation is the origin the request arrived
+on, so one deployment answers each of its hosts as that host's own DID —
+nothing is configured, and no name is more real than another.
 
 ## Protocols
 
@@ -118,8 +128,8 @@ requires an authcrypt envelope, and the proven sender DID *is* the account.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `MEDIATOR_PUBLIC_URL` | — (required) | Public URL, baked into the DID on first start |
-| `MEDIATOR_DID_METHODS` | stored DID's method (first start mints `peer2`) | Ordered list of active methods (`peer2,peer4,web`); first = primary |
+| `MEDIATOR_PUBLIC_URL` | — (required; Node only) | Public URL the DIDs derive from — Workers use each request's own origin instead |
+| `MEDIATOR_DID_METHODS` | `peer2` on Node, `web` on Workers | Ordered list of active methods (`peer2,peer4,web`); first = primary |
 | `MEDIATOR_PORT` / `MEDIATOR_HOST` | `8080` / `0.0.0.0` | Listen address |
 | `MEDIATOR_DATA_DIR` | `/data` in Docker, `./data` otherwise | Identity + SQLite |
 | `MEDIATOR_OPEN_REGISTRATION` | `true` | Grant mediation to any DID that asks |

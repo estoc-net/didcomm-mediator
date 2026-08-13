@@ -1,11 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import WebSocket from "ws";
 
 import { buildServer, type MediatorServer } from "../src/server.js";
-import { loadOrCreateIdentity, type MediatorIdentity } from "../src/identity.js";
+import { mintIdentity, type MediatorIdentity } from "../src/identity-core.js";
 import {
   TEST_CONFIG,
   agent,
@@ -25,12 +22,10 @@ let server: MediatorServer;
 let mediator: MediatorIdentity;
 let alice: TestAgent;
 let baseUrl: string;
-let dataDir: string;
 
 beforeAll(async () => {
-  dataDir = mkdtempSync(join(tmpdir(), "mediator-ts-ws-test-"));
-  mediator = loadOrCreateIdentity(dataDir, TEST_CONFIG.publicUrl, "peer2", () => {});
-  alice = agent("alice-live");
+  mediator = await mintIdentity(TEST_CONFIG.publicUrl, "peer2");
+  alice = await agent("alice-live");
   server = buildServer({
     identity: mediator,
     store: memoryStore(),
@@ -42,7 +37,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await server.close();
-  rmSync(dataDir, { recursive: true, force: true });
 });
 
 function nextMessage(ws: WebSocket): Promise<string> {

@@ -1,19 +1,15 @@
 // Cloudflare Workers deployment of the mediator.
 //
-// Setup:
-//   1. wrangler d1 create mediator            → paste database_id below
-//   2. npm run mint-identity -- https://your-worker.example.workers.dev [peer2|peer4|web]
-//      wrangler secret put MEDIATOR_IDENTITY  → paste the JSON
-//      (locally: put MEDIATOR_IDENTITY='<json>' in .dev.vars)
-//   3. wrangler deploy
+// Deploying by hand:
+//   1. wrangler d1 create mediator   → paste database_id below
+//   2. wrangler deploy
+// (The "Deploy to Cloudflare" button does both for you, including the id.)
 //
-// Decide the public URL before minting: the peer methods bake it into the DID
-// (a new URL means a new identity and a new DID), and did:web derives the DID
-// from the domain and serves keys + endpoints at /.well-known/did.json.
-//
-// MEDIATOR_DID_METHODS (vars, e.g. "peer2,web") activates several names at
-// once off the same secret — first is the advertised primary, the rest are
-// aliases answered equally. Default: the minted DID's own method only.
+// There is nothing else: no secrets and no URL to configure. The mediator
+// mints its keys into D1 on first contact and answers every host that routes
+// to it — workers.dev, a custom domain added later, or both at once — as that
+// host's own did:web. Attach custom domains in the dashboard rather than
+// here, so this file stays deployable on any account.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "didcomm-mediator",
@@ -37,12 +33,6 @@
       "database_id": "3cb0373b-496b-4f85-99c8-2e151a24b6eb"
     }
   ],
-  "routes": [{ "pattern": "mediator.estoc.dev", "custom_domain": true }],
-  "vars": {
-    // peer2 stays primary — the deployed DID every existing client is bound
-    // to; peer4 and web answer as aliases off the same keys.
-    "MEDIATOR_DID_METHODS": "peer2,peer4,web"
-  },
   // Hourly purge of expired messages.
   "triggers": { "crons": ["17 * * * *"] },
   "observability": { "enabled": true }

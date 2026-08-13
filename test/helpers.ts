@@ -5,7 +5,7 @@ import type { IMessage } from "didcomm-node";
 import type { MediatorConfig } from "../src/config.js";
 import { DIDCommContext } from "../src/didcomm/didcomm.js";
 import { resolveDIDCommDoc } from "../src/didcomm/did-resolver.js";
-import { mintIdentity, type MediatorIdentity } from "../src/identity.js";
+import { mintIdentity, type MediatorIdentity } from "../src/identity-core.js";
 import { SqliteStore } from "../src/store/sqlite.js";
 
 export const TEST_CONFIG: MediatorConfig = {
@@ -34,8 +34,8 @@ export interface TestAgent {
   ctx: DIDCommContext;
 }
 
-export function agent(name: string): TestAgent {
-  const identity = mintIdentity(`https://${name}.test/didcomm`);
+export async function agent(name: string): Promise<TestAgent> {
+  const identity = await mintIdentity(`https://${name}.test/didcomm`);
   return {
     identity,
     did: identity.did,

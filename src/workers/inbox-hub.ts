@@ -1,7 +1,7 @@
 import { dispatch } from "../protocols/dispatch.js";
 import type { Session } from "../protocols/types.js";
 import { Sessions } from "../transport/sessions.js";
-import { depsFromEnv, type Env, type WorkerDeps } from "./env.js";
+import { depsForOrigin, type Env, type WorkerDeps } from "./env.js";
 
 /**
  * The Durable Object holding every live WebSocket — the stateful heart the
@@ -25,34 +25,49 @@ interface Attachment {
   did: string | null;
   liveDelivery: boolean;
   returnRoute: boolean;
+  /** The origin the socket connected on — which of the mediator's names it talks to. */
+  origin: string | null;
 }
 
 interface HubSession extends Session {
   ws: WebSocket;
+  origin: string | null;
 }
 
 export class InboxHub {
-  private deps: WorkerDeps;
   private sessions = new Sessions();
   private bySocket = new Map<WebSocket, HubSession>();
+  // One identity per origin, resolved lazily — the DO wakes from hibernation
+  // with sockets but no request, so the origin rides each socket's attachment.
+  private deps = new Map<string, Promise<WorkerDeps>>();
 
   constructor(
     private state: DurableObjectState,
-    env: Env
+    private env: Env
   ) {
-    this.deps = depsFromEnv(env);
     for (const ws of state.getWebSockets()) {
       this.adopt(ws);
     }
   }
 
-  private adopt(ws: WebSocket): HubSession {
+  private depsFor(origin: string): Promise<WorkerDeps> {
+    let deps = this.deps.get(origin);
+    if (deps === undefined) {
+      deps = depsForOrigin(this.env, origin);
+      deps.catch(() => this.deps.delete(origin));
+      this.deps.set(origin, deps);
+    }
+    return deps;
+  }
+
+  private adopt(ws: WebSocket, origin?: string): HubSession {
     const saved = (ws.deserializeAttachment() ?? null) as Attachment | null;
     let liveDelivery = saved?.liveDelivery ?? false;
     let returnRoute = saved?.returnRoute ?? false;
 
     const session: HubSession = {
       ws,
+      origin: origin ?? saved?.origin ?? null,
       did: saved?.did ?? null,
       get liveDelivery() {
         return liveDelivery;
@@ -84,8 +99,12 @@ export class InboxHub {
         did: session.did,
         liveDelivery,
         returnRoute,
+        origin: session.origin,
       } satisfies Attachment);
 
+    if (origin !== undefined) {
+      persist();
+    }
     if (session.did !== null) {
       this.sessions.bind(session.did, session);
     }
@@ -97,7 +116,7 @@ export class InboxHub {
     if ((request.headers.get("upgrade") ?? "").toLowerCase() === "websocket") {
       const pair = new WebSocketPair();
       this.state.acceptWebSocket(pair[1]);
-      this.adopt(pair[1]);
+      this.adopt(pair[1], new URL(request.url).origin);
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
 
@@ -124,12 +143,19 @@ export class InboxHub {
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     const session = this.bySocket.get(ws) ?? this.adopt(ws);
+    if (session.origin === null) {
+      // A socket from before origins were persisted — it cannot be answered
+      // as the name it connected to, so it gets a fresh start instead.
+      ws.close(1011, "reconnect");
+      return;
+    }
     try {
+      const deps = await this.depsFor(session.origin);
       const raw =
         typeof message === "string"
           ? message
           : new TextDecoder().decode(message);
-      const unpacked = await this.deps.ctx.unpack(raw);
+      const unpacked = await deps.ctx.unpack(raw);
 
       // The socket inherits the first proven identity and keeps it: live
       // delivery needs a DID to index the connection under, and a session
@@ -142,13 +168,14 @@ export class InboxHub {
           did: session.did,
           liveDelivery: session.liveDelivery,
           returnRoute: session.returnRoute,
+          origin: session.origin,
         } satisfies Attachment);
       }
 
       const packed = await dispatch(unpacked, {
-        ctx: this.deps.ctx,
-        store: this.deps.store,
-        config: this.deps.policy,
+        ctx: deps.ctx,
+        store: deps.store,
+        config: deps.policy,
         sessions: this.sessions,
         session,
         sender: unpacked.verifiedFrom,

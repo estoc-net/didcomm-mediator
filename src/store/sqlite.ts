@@ -51,7 +51,32 @@ export class SqliteStore implements MediationStore {
       );
       CREATE INDEX IF NOT EXISTS messages_owner ON messages(owner_did, created_at);
       CREATE INDEX IF NOT EXISTS messages_expiry ON messages(expires_at);
+      CREATE TABLE IF NOT EXISTS identity (
+        id         INTEGER PRIMARY KEY CHECK (id = 1),
+        secrets    TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
     `);
+  }
+
+  async loadIdentity(): Promise<string | null> {
+    const row = this.db
+      .prepare("SELECT secrets FROM identity WHERE id = 1")
+      .get() as { secrets: string } | undefined;
+    return row?.secrets ?? null;
+  }
+
+  async initIdentity(secretsJson: string): Promise<string> {
+    this.db
+      .prepare(
+        "INSERT OR IGNORE INTO identity (id, secrets, created_at) VALUES (1, ?, ?)"
+      )
+      .run(secretsJson, Date.now());
+    const winner = await this.loadIdentity();
+    if (winner === null) {
+      throw new Error("The identity row vanished between insert and read");
+    }
+    return winner;
   }
 
   async grantMediation(did: string): Promise<void> {

@@ -1,15 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import bs58 from "bs58";
 import { Message } from "didcomm-node";
 import type { IMessage } from "didcomm-node";
 import WebSocket from "ws";
 
 import { buildServer, type MediatorServer } from "../src/server.js";
-import { loadOrCreateIdentity, type MediatorIdentity } from "../src/identity.js";
+import { mintIdentity, type MediatorIdentity } from "../src/identity-core.js";
 import { encodeLongForm } from "@estoc/did-peer";
 import { resolveDIDCommDoc } from "../src/didcomm/did-resolver.js";
 import type { Secret } from "@estoc/did-peer";
@@ -31,7 +28,6 @@ const BASE = `http://127.0.0.1:${PORT}`;
 
 let server: MediatorServer;
 let mediator: MediatorIdentity;
-let dataDir: string;
 
 /** A demo agent's key pair as the demo builds them: Multikey verification methods. */
 function demoKeys() {
@@ -211,8 +207,7 @@ async function establishMediation(agent: DemoAgent): Promise<void> {
 }
 
 beforeAll(async () => {
-  dataDir = mkdtempSync(join(tmpdir(), "mediator-ts-demo-test-"));
-  mediator = loadOrCreateIdentity(dataDir, BASE, "peer2", () => {});
+  mediator = await mintIdentity(BASE, "peer2");
   server = buildServer({
     identity: mediator,
     store: memoryStore(),
@@ -223,7 +218,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await server.close();
-  rmSync(dataDir, { recursive: true, force: true });
 });
 
 describe("didcomm-demo wire behavior", () => {

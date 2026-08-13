@@ -14,7 +14,8 @@ ENV NODE_ENV=production \
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
-# The identity and the message store live here; lose the volume, lose the DID.
+# The whole mediator state — keys and messages in one SQLite db — lives here;
+# lose the volume, lose the DID.
 RUN mkdir /data && chown node:node /data
 VOLUME /data
 USER node

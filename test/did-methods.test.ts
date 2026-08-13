@@ -1,16 +1,14 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { IMessage } from "didcomm-node";
 
 import { DIDCommContext } from "../src/didcomm/didcomm.js";
-import { didWebFromUrl } from "../src/identity-core.js";
 import {
-  loadOrCreateIdentity,
+  didWebFromUrl,
+  identityFor,
+  loadOrCreateSecrets,
   mintIdentity,
   type MediatorIdentity,
-} from "../src/identity.js";
+} from "../src/identity-core.js";
 import { buildServer } from "../src/server.js";
 import { longToShort } from "@estoc/did-peer";
 import {
@@ -36,16 +34,22 @@ describe("did:web derivation", () => {
     );
   });
 
-  it("refuses http — no resolver would ever fetch it", () => {
-    expect(() => didWebFromUrl("http://localhost:8080")).toThrow(/https/);
+  it("refuses non-loopback http — no resolver would ever fetch it", () => {
+    expect(() => didWebFromUrl("http://mediator.example.com")).toThrow(/https/);
+  });
+
+  it("allows loopback http — wrangler dev's world", () => {
+    expect(didWebFromUrl("http://localhost:8787")).toBe(
+      "did:web:localhost%3A8787"
+    );
   });
 });
 
 describe("minted identities", () => {
   it.each(["peer2", "peer4", "web"] as const)(
     "%s: document id matches the DID, #key-1 agrees, #key-2 authenticates, services carry both transports",
-    (method) => {
-      const identity = mintIdentity(TEST_CONFIG.publicUrl, method);
+    async (method) => {
+      const identity = await mintIdentity(TEST_CONFIG.publicUrl, method);
 
       expect(identity.didDoc.id).toBe(identity.did);
       expect(identity.didDoc.keyAgreement).toEqual([`${identity.did}#key-1`]);
@@ -60,14 +64,14 @@ describe("minted identities", () => {
     }
   );
 
-  it("peer4 mints the long form", () => {
-    const identity = mintIdentity(TEST_CONFIG.publicUrl, "peer4");
+  it("peer4 mints the long form", async () => {
+    const identity = await mintIdentity(TEST_CONFIG.publicUrl, "peer4");
     expect(identity.did).toMatch(/^did:peer:4zQm[1-9A-HJ-NP-Za-km-z]+:z/);
     expect(identity.webDidDoc).toBeNull();
   });
 
-  it("web publishes a document with absolute references and no private key material", () => {
-    const identity = mintIdentity(TEST_CONFIG.publicUrl, "web");
+  it("web publishes a document with absolute references and no private key material", async () => {
+    const identity = await mintIdentity(TEST_CONFIG.publicUrl, "web");
     expect(identity.did).toBe("did:web:mediator.test");
 
     const doc = identity.webDidDoc;
@@ -89,20 +93,21 @@ describe("minted identities", () => {
     }
   });
 
-  it("peer2 serves no did.json document", () => {
-    expect(mintIdentity(TEST_CONFIG.publicUrl, "peer2").webDidDoc).toBeNull();
+  it("peer2 serves no did.json document", async () => {
+    const identity = await mintIdentity(TEST_CONFIG.publicUrl, "peer2");
+    expect(identity.webDidDoc).toBeNull();
   });
 });
 
 /** A mediator built around `identity`, and a client whose resolver pins it. */
-function harness(identity: MediatorIdentity) {
+async function harness(identity: MediatorIdentity) {
   const { app } = buildServer({
     identity,
     store: memoryStore(),
     config: TEST_CONFIG,
   });
 
-  const alice: TestAgent = agent("alice");
+  const alice: TestAgent = await agent("alice");
   // A did:web document cannot be decoded offline, so the test client pins the
   // mediator's document instead of fetching it — exactly what a deployed
   // client's resolver does over the network.
@@ -139,11 +144,16 @@ function harness(identity: MediatorIdentity) {
   return { app, send };
 }
 
+const identityByMethod = {
+  peer4: await mintIdentity(TEST_CONFIG.publicUrl, "peer4"),
+  web: await mintIdentity(TEST_CONFIG.publicUrl, "web"),
+};
+
 describe.each(["peer4", "web"] as const)("a %s mediator", (method) => {
-  const identity = mintIdentity(TEST_CONFIG.publicUrl, method);
+  const identity = identityByMethod[method];
 
   it("grants mediation and routes through its own DID", async () => {
-    const { send } = harness(identity);
+    const { send } = await harness(identity);
     const reply = await send(
       "https://didcomm.org/coordinate-mediation/3.0/mediate-request",
       {}
@@ -155,7 +165,7 @@ describe.each(["peer4", "web"] as const)("a %s mediator", (method) => {
   });
 
   it("still refuses binding the mediator's own DID", async () => {
-    const { send } = harness(identity);
+    const { send } = await harness(identity);
     await send("https://didcomm.org/coordinate-mediation/3.0/mediate-request", {});
 
     const updates = [{ recipient_did: identity.did, action: "add" }];
@@ -176,9 +186,11 @@ describe.each(["peer4", "web"] as const)("a %s mediator", (method) => {
   });
 });
 
+// peer2 primary, did:web riding as an alias off the same keys.
+const bothMethods = await mintIdentity(TEST_CONFIG.publicUrl, ["peer2", "web"]);
+
 describe("simultaneous methods", () => {
-  // peer2 minted and primary, did:web riding as an alias off the same keys.
-  const identity = mintIdentity(TEST_CONFIG.publicUrl, ["peer2", "web"]);
+  const identity = bothMethods;
   const webDid = identity.aliases[0]?.did;
 
   it("derives every name from the one stored key set", () => {
@@ -196,7 +208,7 @@ describe("simultaneous methods", () => {
   });
 
   it("answers each name as that name", async () => {
-    const { send } = harness(identity);
+    const { send } = await harness(identity);
 
     const viaPeer = await send(
       "https://didcomm.org/coordinate-mediation/3.0/mediate-request",
@@ -215,7 +227,7 @@ describe("simultaneous methods", () => {
   });
 
   it("refuses binding any of its names", async () => {
-    const { send } = harness(identity);
+    const { send } = await harness(identity);
     await send("https://didcomm.org/coordinate-mediation/3.0/mediate-request", {});
 
     const reply = await send(
@@ -232,7 +244,7 @@ describe("simultaneous methods", () => {
   });
 
   it("advertises the primary, lists every name, serves did.json", async () => {
-    const { app } = harness(identity);
+    const { app } = await harness(identity);
 
     const probe = (await (await app.request("/")).json()) as {
       did: string;
@@ -250,11 +262,11 @@ describe("simultaneous methods", () => {
   it("flipping the order flips the advertised DID — same names, same keys", async () => {
     // Minted as did:web this time, so the peer2 alias exercises re-derivation
     // from the stored secrets in earnest.
-    const flipped = mintIdentity(TEST_CONFIG.publicUrl, ["web", "peer2"]);
+    const flipped = await mintIdentity(TEST_CONFIG.publicUrl, ["web", "peer2"]);
     expect(flipped.did).toBe("did:web:mediator.test");
     expect(flipped.aliases[0].did).toMatch(/^did:peer:2\./);
 
-    const { send } = harness(flipped);
+    const { send } = await harness(flipped);
     const viaAlias = await send(
       "https://didcomm.org/coordinate-mediation/3.0/mediate-request",
       {},
@@ -265,30 +277,48 @@ describe("simultaneous methods", () => {
   });
 });
 
-describe("loadOrCreateIdentity defaults", () => {
-  it("follows the stored DID's method when none is specified", () => {
-    const dir = mkdtempSync(join(tmpdir(), "mediator-did-methods-"));
-    try {
-      const minted = loadOrCreateIdentity(
-        dir,
-        TEST_CONFIG.publicUrl,
-        "web",
-        () => {}
-      );
-      // No methods — the identity on disk decides, same as on Workers.
-      const reloaded = loadOrCreateIdentity(dir, TEST_CONFIG.publicUrl, [], () => {});
-      expect(reloaded.did).toBe(minted.did);
-      expect(reloaded.dids).toEqual([minted.did]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+describe("keys in the store", () => {
+  it("mints once and every later load returns the same keys", async () => {
+    const store = memoryStore();
+    const minted = await loadOrCreateSecrets(store);
+    const reloaded = await loadOrCreateSecrets(store);
+    expect(reloaded).toEqual(minted);
+
+    // Same keys, same names — a restart cannot rename the mediator.
+    const first = identityFor(minted, TEST_CONFIG.publicUrl, ["peer2"]);
+    const again = identityFor(reloaded, TEST_CONFIG.publicUrl, ["peer2"]);
+    expect(again.did).toBe(first.did);
+  });
+
+  it("a lost race yields the winner's keys, not the loser's mint", async () => {
+    const store = memoryStore();
+    const winner = await store.initIdentity('[{"id":"#key-1"}]');
+    const loser = await store.initIdentity('[{"id":"#other"}]');
+    expect(winner).toBe('[{"id":"#key-1"}]');
+    expect(loser).toBe('[{"id":"#key-1"}]');
+  });
+
+  it("one key set answers as a different did:web on every URL — the Workers story", async () => {
+    const store = memoryStore();
+    const secrets = await loadOrCreateSecrets(store);
+
+    const workersDev = identityFor(secrets, "https://demo.example.workers.dev", ["web"]);
+    const custom = identityFor(secrets, "https://mediator.example.com", ["web"]);
+    expect(workersDev.did).toBe("did:web:demo.example.workers.dev");
+    expect(custom.did).toBe("did:web:mediator.example.com");
+
+    // Different names, same #key-1 — one mediator behind every door.
+    const jwkOf = (identity: MediatorIdentity) =>
+      (identity.webDidDoc?.verificationMethod as { publicKeyJwk: unknown }[])[0]
+        .publicKeyJwk;
+    expect(jwkOf(workersDev)).toEqual(jwkOf(custom));
   });
 });
 
 describe("did.json routes", () => {
   it("serves the did:web document at both derivation paths", async () => {
-    const identity = mintIdentity(TEST_CONFIG.publicUrl, "web");
-    const { app } = harness(identity);
+    const identity = await mintIdentity(TEST_CONFIG.publicUrl, "web");
+    const { app } = await harness(identity);
 
     for (const path of ["/.well-known/did.json", "/did.json"]) {
       const res = await app.request(path);
@@ -300,7 +330,7 @@ describe("did.json routes", () => {
   });
 
   it("does not exist for a peer-method identity", async () => {
-    const { app } = harness(mintIdentity(TEST_CONFIG.publicUrl, "peer2"));
+    const { app } = await harness(await mintIdentity(TEST_CONFIG.publicUrl, "peer2"));
     expect((await app.request("/.well-known/did.json")).status).toBe(404);
     expect((await app.request("/did.json")).status).toBe(404);
   });

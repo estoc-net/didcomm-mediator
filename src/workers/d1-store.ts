@@ -72,8 +72,38 @@ export class D1Store implements MediationStore {
       this.db.prepare(
         "CREATE INDEX IF NOT EXISTS messages_expiry ON messages(expires_at)"
       ),
+      this.db.prepare(
+        `CREATE TABLE IF NOT EXISTS identity (
+           id         INTEGER PRIMARY KEY CHECK (id = 1),
+           secrets    TEXT NOT NULL,
+           created_at INTEGER NOT NULL
+         )`
+      ),
     ]);
     return this.ready;
+  }
+
+  async loadIdentity(): Promise<string | null> {
+    await this.init();
+    const row = await this.db
+      .prepare("SELECT secrets FROM identity WHERE id = 1")
+      .first<{ secrets: string }>();
+    return row?.secrets ?? null;
+  }
+
+  async initIdentity(secretsJson: string): Promise<string> {
+    await this.init();
+    await this.db
+      .prepare(
+        "INSERT OR IGNORE INTO identity (id, secrets, created_at) VALUES (1, ?, ?)"
+      )
+      .bind(secretsJson, Date.now())
+      .run();
+    const winner = await this.loadIdentity();
+    if (winner === null) {
+      throw new Error("The identity row vanished between insert and read");
+    }
+    return winner;
   }
 
   async grantMediation(did: string): Promise<void> {

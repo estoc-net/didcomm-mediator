@@ -3,10 +3,7 @@ import type { Hono } from "hono";
 import type { IMessage } from "didcomm-node";
 
 import { buildServer } from "../src/server.js";
-import { loadOrCreateIdentity, type MediatorIdentity } from "../src/identity.js";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mintIdentity, type MediatorIdentity } from "../src/identity-core.js";
 import {
   TEST_CONFIG,
   agent,
@@ -22,13 +19,11 @@ let app: Hono;
 let mediator: MediatorIdentity;
 let alice: TestAgent;
 let bob: TestAgent;
-let dataDir: string;
 
 beforeAll(async () => {
-  dataDir = mkdtempSync(join(tmpdir(), "mediator-ts-test-"));
-  mediator = loadOrCreateIdentity(dataDir, TEST_CONFIG.publicUrl, "peer2", () => {});
-  alice = agent("alice");
-  bob = agent("bob");
+  mediator = await mintIdentity(TEST_CONFIG.publicUrl, "peer2");
+  alice = await agent("alice");
+  bob = await agent("bob");
   app = buildServer({
     identity: mediator,
     store: memoryStore(),
@@ -37,7 +32,6 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  rmSync(dataDir, { recursive: true, force: true });
 });
 
 /** Authcrypt `message` from `sender` to the mediator, POST it, unpack the reply. */
@@ -246,7 +240,7 @@ describe("routing/2.0 + messagepickup/3.0", () => {
 
   it("delivers to a registered account DID over any squatted binding", async () => {
     // Bob squats Carol's DID before she registers…
-    const carol = agent("carol");
+    const carol = await agent("carol");
     await send(
       bob,
       "https://didcomm.org/coordinate-mediation/3.0/recipient-update",
@@ -357,7 +351,7 @@ describe("supporting protocols", () => {
 
 describe("return-route extension", () => {
   it("drops the reply — but not the side effects — without return_route", async () => {
-    const carol = agent("carol");
+    const carol = await agent("carol");
     const packed = await carol.ctx.packEncrypted(
       plaintext(
         "https://didcomm.org/coordinate-mediation/3.0/mediate-request",
