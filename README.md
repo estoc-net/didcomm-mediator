@@ -47,10 +47,14 @@ curl -s https://mediator.example.com/
 ```
 
 On Node the public URL is configuration (`MEDIATOR_PUBLIC_URL`), and the
-default method is did:peer:2, which works on any URL, localhost included —
-but the DID is derived from the keys *and* the URL, so changing the URL
-renames the mediator (the keys stay). Keep the `mediator-data` volume and the
-URL, keep the DID; delete the volume and the next start mints fresh keys.
+default method is the same as on Workers: did:web — the mediator's name *is*
+its domain. That assumes an https URL (or localhost, for development); for a
+URL the world cannot fetch, such as plain http on a LAN, set
+`MEDIATOR_DID_METHODS=peer2` for the self-contained method that works
+anywhere. Either way the DID is derived from the keys *and* the URL, so
+changing the URL renames the mediator (the keys stay). Keep the
+`mediator-data` volume and the URL, keep the DID; delete the volume and the
+next start mints fresh keys.
 
 TLS is out of scope: put any reverse proxy (Caddy, nginx) in front and point
 `MEDIATOR_PUBLIC_URL` at the public HTTPS address. The proxy must also pass
@@ -61,11 +65,11 @@ WebSocket upgrades on the same path.
 One key set, up to three names — each method's DID is a deterministic function
 of the stored keys and a public URL:
 
-- **`peer2`** (Node default) — self-contained: the whole document, endpoint
-  included, is encoded in the DID and resolves offline. Works anywhere,
-  localhost included. Changing the URL or the keys means a new DID.
+- **`peer2`** — self-contained: the whole document, endpoint included, is
+  encoded in the DID and resolves offline. Works anywhere, plain-http LANs
+  included. Changing the URL or the keys means a new DID.
 - **`peer4`** — the same trade-offs in did:peer:4's long-form encoding.
-- **`web`** (Workers default) — the DID *is* the domain:
+- **`web`** (the default) — the DID *is* the domain:
   `https://mediator.example.com` becomes `did:web:mediator.example.com`, and
   keys and endpoints live in the document served at `/.well-known/did.json`
   (also `/did.json`), so both can rotate without changing the DID. Requires
@@ -129,7 +133,7 @@ requires an authcrypt envelope, and the proven sender DID *is* the account.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `MEDIATOR_PUBLIC_URL` | — (required; Node only) | Public URL the DIDs derive from — Workers use each request's own origin instead |
-| `MEDIATOR_DID_METHODS` | `peer2` on Node, `web` on Workers | Ordered list of active methods (`peer2,peer4,web`); first = primary |
+| `MEDIATOR_DID_METHODS` | `web` | Ordered list of active methods (`peer2,peer4,web`); first = primary. Set `peer2` for a non-loopback http URL |
 | `MEDIATOR_PORT` / `MEDIATOR_HOST` | `8080` / `0.0.0.0` | Listen address |
 | `MEDIATOR_DATA_DIR` | `/data` in Docker, `./data` otherwise | Identity + SQLite |
 | `MEDIATOR_OPEN_REGISTRATION` | `true` | Grant mediation to any DID that asks |

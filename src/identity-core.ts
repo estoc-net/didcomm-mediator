@@ -149,7 +149,7 @@ export function didWebFromUrl(publicUrl: string): string {
   if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
     throw new Error(
       `did:web requires an https public URL (got ${publicUrl}); ` +
-        "use peer2 or peer4 for non-loopback http"
+        "set MEDIATOR_DID_METHODS=peer2 for non-loopback http"
     );
   }
 
@@ -335,9 +335,9 @@ function documentOf(
 
 /**
  * Expand a key set into every active name at one URL. `methods` is ordered —
- * the first entry is the primary (advertised) DID. Deployments choose their
- * own default (Node: peer2, which works on any URL; Workers: web, whose name
- * follows the request host), so an empty list is a caller bug, not a choice.
+ * the first entry is the primary (advertised) DID. Both targets default to
+ * web (the name follows the URL), applied at their entry points — so an
+ * empty list here is a caller bug, not a choice.
  */
 export function identityFor(
   secrets: Secret[],

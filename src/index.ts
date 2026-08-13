@@ -16,12 +16,14 @@ const store = new SqliteStore(join(config.dataDir, "mediator.db"), {
 });
 
 // The keys live in the same SQLite file as everything else — the db *is* the
-// mediator. peer2 is the Node default: it works on any URL, localhost included.
+// mediator. did:web is the default here as on Workers — one mental model,
+// the name follows the URL; a non-loopback http URL needs
+// MEDIATOR_DID_METHODS=peer2, the method that works anywhere.
 const secrets = await loadOrCreateSecrets(store, console.log);
 const identity = identityFor(
   secrets,
   config.publicUrl,
-  config.didMethods.length > 0 ? config.didMethods : ["peer2"]
+  config.didMethods.length > 0 ? config.didMethods : ["web"]
 );
 
 const server = buildServer({

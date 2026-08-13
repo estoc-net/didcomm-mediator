@@ -25,8 +25,8 @@ export interface MediatorConfig extends MediatorPolicy {
   /**
    * The active DID methods, in order — the first is the primary (advertised)
    * DID; the rest are aliases the mediator answers to equally. All derive
-   * from the one stored key set. Empty means the target's default (Node:
-   * peer2, Workers: web).
+   * from the one stored key set. Empty means the default, web — set peer2
+   * here for a public URL the world cannot fetch (non-loopback http).
    */
   didMethods: DidMethod[];
   host: string;
