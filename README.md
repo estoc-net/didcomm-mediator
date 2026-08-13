@@ -24,16 +24,16 @@ Click the button above — it clones this repo into your GitHub account,
 provisions the D1 database and Durable Object, and deploys. Or by hand:
 
 ```sh
-wrangler d1 create mediator        # paste database_id into wrangler.jsonc
-wrangler deploy
+npx wrangler d1 create mediator    # paste database_id into wrangler.jsonc
+npx wrangler deploy
 npm run smoke -- https://your-worker.example.workers.dev
 ```
 
 The Workers deployment is URL-agnostic: it answers every host that routes to
 it as that host's own `did:web` — `your-worker.example.workers.dev` on day
 one, and if you later attach a custom domain in the dashboard, that domain
-becomes a second, equally live DID off the same keys. Locally, `wrangler dev`
-serves `did:web:localhost%3A8787` the same way.
+becomes a second, equally live DID off the same keys. Locally, `npm run
+dev:workers` serves `did:web:localhost%3A8787` the same way.
 
 `npm run smoke -- <url>` drives a real client through the whole surface —
 grant, keylist, anonymous forward, pickup, WebSocket live delivery — against
