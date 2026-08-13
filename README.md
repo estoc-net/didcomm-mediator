@@ -42,6 +42,11 @@ deploy must never mint its own, because the public URL (and so the DID) has to
 outlive every redeploy. Locally, `wrangler dev` works the same way with
 `MEDIATOR_IDENTITY='<json>'` in `.dev.vars`.
 
+`wrangler.jsonc` is per-deployment config: besides pasting your `database_id`,
+replace `routes.pattern` (ours is `mediator.estoc.dev`) with your own domain,
+or delete `routes` to serve from the workers.dev URL — either way it must
+match the URL the identity was minted for.
+
 `npm run smoke -- <url>` drives a real client through the whole surface —
 grant, keylist, anonymous forward, pickup, WebSocket live delivery — against
 any running mediator, whichever target it is.
