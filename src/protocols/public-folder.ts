@@ -226,7 +226,7 @@ export async function publish(
   if (didOf(kid) !== card.did) {
     return problem("e.p.card.invalid", "card.did does not match the signing kid");
   }
-  if (card.root !== undefined && !(isCid(card.root) && isDirCid(card.root))) {
+  if (card.root !== null && !(isCid(card.root) && isDirCid(card.root))) {
     return problem(
       "e.p.card.invalid",
       "card.root is not a dag-json directory CID"
@@ -265,10 +265,10 @@ export async function publish(
     }
   }
 
-  // A takedown card publishes "nothing": no root, nothing can be missing, so
-  // the exchange collapses straight to the receipt and the previous version
+  // A takedown card publishes "nothing": a null root, nothing can be missing,
+  // so the exchange collapses straight to the receipt and the previous version
   // stops being served (its closure loses protection at once).
-  if (card.root === undefined) {
+  if (card.root === null) {
     await store.putCard(card.did, jws, null, []);
     return { type: PUBLISHED, body: { did: card.did, card_id: card.id } };
   }

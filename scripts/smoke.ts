@@ -385,6 +385,7 @@ const readerCtx = new DIDCommContext(reader.did, reader.didDoc, reader.secrets);
     did: alice.did,
     id: randomUUID(),
     expires: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+    root: null,
   };
   const takedownJws = await createCard(takedown, signer, edSecret.id);
   const packed = await ctx.packEncrypted(

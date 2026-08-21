@@ -190,7 +190,7 @@ function freshCard(root?: string): RootCard {
     did: owner.did,
     id: randomUUID(),
     expires: new Date(Date.now() + 14 * 24 * 3600 * 1000).toISOString(),
-    ...(root !== undefined ? { root } : {}),
+    root: root ?? null,
   };
 }
 
@@ -256,6 +256,15 @@ describe("public-folder/1.0 publish", () => {
     const { kid, sign } = cardSigner(outsider);
     const forged = await createCard(card, { sign }, kid);
     const reply = await send(owner, PUBLISH, { card: forged });
+    expect(reply?.type).toBe(PROBLEM);
+    expect(reply?.body.code).toBe("e.p.card.invalid");
+  });
+
+  it("refuses a card missing the root field — null is the only takedown encoding", async () => {
+    const { root: _root, ...fieldless } = freshCard(tree.root);
+    const { kid, sign } = cardSigner(owner);
+    const jws = await createCard(fieldless as RootCard, { sign }, kid);
+    const reply = await send(owner, PUBLISH, { card: jws });
     expect(reply?.type).toBe(PROBLEM);
     expect(reply?.body.code).toBe("e.p.card.invalid");
   });

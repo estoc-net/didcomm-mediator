@@ -3,8 +3,10 @@
  * Ed25519, `kid` naming the owner's verification method.
  *
  * Copied lineage from @estoc/signed-dir, with the spec's takedown-card
- * change already applied: `root` is OPTIONAL, and a card without one is the
- * owner's signed statement that this DID currently publishes nothing.
+ * change already applied: `root` is REQUIRED but nullable, and a null root
+ * is the owner's signed statement that this DID currently publishes
+ * nothing. Null is the only takedown encoding — a card missing the field
+ * is malformed, so a takedown can only be written deliberately.
  *
  * This module proves *who signed what*; whether the card is acceptable —
  * expiry, publish policy — is the caller's decision, deliberately outside.
@@ -24,8 +26,8 @@ export interface RootCard {
   id: string;
   /** RFC 3339 instant after which the card is stale (the DNS-TTL analogue). */
   expires: string;
-  /** Root directory CID; absent on a takedown card. */
-  root?: string;
+  /** Root directory CID; null on a takedown card. */
+  root: string | null;
 }
 
 function checkCardShape(value: unknown): RootCard {
@@ -34,11 +36,11 @@ function checkCardShape(value: unknown): RootCard {
     typeof did !== "string" ||
     typeof id !== "string" ||
     typeof expires !== "string" ||
-    (root !== undefined && typeof root !== "string")
+    (root !== null && typeof root !== "string")
   ) {
     throw new Error("malformed root card");
   }
-  return root === undefined ? { did, id, expires } : { did, id, expires, root };
+  return { did, id, expires, root };
 }
 
 /** Anything that can produce a raw 64-byte Ed25519 signature. */
