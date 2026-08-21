@@ -6,12 +6,19 @@ import WebSocket from "ws";
 import { DIDCommContext } from "../src/didcomm/didcomm.js";
 import { resolveDIDCommDoc } from "../src/didcomm/did-resolver.js";
 import { mintIdentity } from "../src/identity-core.js";
+import { createCard, type RootCard } from "../src/public-folder/card.js";
+import {
+  encodeDirNode,
+  fileCid,
+  type DirEntry,
+} from "../src/public-folder/objects.js";
 
 /**
  * Drive a full client flow against a *running* mediator — the deploy
  * verification tool. Exercises mediation grant, keylist binding, anonymous
- * forward, the pickup loop, and WebSocket live delivery (asserting text
- * frames, the thing headless clients never catch).
+ * forward, the pickup loop, WebSocket live delivery (asserting text frames,
+ * the thing headless clients never catch), and the public-folder relay:
+ * publish rounds, anonymous query, HTTP object/card reads, takedown.
  *
  *   npm run smoke -- http://127.0.0.1:8787
  */
@@ -236,6 +243,170 @@ const afterLiveAck = await send(
 );
 check(afterLiveAck.body.message_count === 0, "live message acknowledged over http");
 ws.close();
+
+// --- public-folder: publish rounds, anonymous query, HTTP reads ---------
+
+const PF = "https://didcomm.org/public-folder/1.0";
+
+const fileBytes = new TextEncoder().encode(`{"smoke":true,"at":${Date.now()}}`);
+const leafCid = await fileCid(fileBytes);
+const dirEntries: DirEntry[] = [
+  { name: "profile.json", type: "file", hash: leafCid, size: fileBytes.length },
+];
+const { cid: rootCid, bytes: rootBytes } = await encodeDirNode(dirEntries);
+
+const edSecret = alice.secrets.find(
+  (s) => s.id.startsWith(alice.did) && s.privateKeyJwk?.crv === "Ed25519"
+);
+if (edSecret?.privateKeyJwk === undefined) {
+  throw new Error("FAILED: smoke identity has no Ed25519 secret");
+}
+const signer = {
+  async sign(data: Uint8Array): Promise<Uint8Array> {
+    const key = await crypto.subtle.importKey(
+      "jwk",
+      edSecret.privateKeyJwk as JsonWebKey,
+      { name: "Ed25519" },
+      false,
+      ["sign"]
+    );
+    return new Uint8Array(
+      await crypto.subtle.sign("Ed25519", key, data as Uint8Array<ArrayBuffer>)
+    );
+  },
+};
+const card: RootCard = {
+  did: alice.did,
+  id: randomUUID(),
+  expires: new Date(Date.now() + 14 * 24 * 3600 * 1000).toISOString(),
+  root: rootCid,
+};
+const cardJws = await createCard(card, signer, edSecret.id);
+
+async function publishRound(
+  attachments?: { id: string; data: { base64: string } }[]
+): Promise<IMessage> {
+  const packed = await ctx.packEncrypted(
+    {
+      ...plaintext(`${PF}/publish`, { card: cardJws }),
+      ...(attachments !== undefined ? { attachments } : {}),
+    },
+    mediatorDid
+  );
+  const res = await fetch(base, {
+    method: "POST",
+    headers: { "content-type": ENCRYPTED },
+    body: packed,
+  });
+  check(res.ok, `POST publish → ${res.status}`);
+  return (await ctx.unpack(await res.text())).message;
+}
+
+const round1 = await publishRound();
+check(
+  round1.type === `${PF}/publish-result` &&
+    sameJson(round1.body.missing, [rootCid]),
+  "publish round 1: root reported missing"
+);
+
+const receipt = await publishRound([
+  { id: rootCid, data: { base64: Buffer.from(rootBytes).toString("base64url") } },
+  { id: leafCid, data: { base64: Buffer.from(fileBytes).toString("base64url") } },
+]);
+check(
+  receipt.type === `${PF}/published` &&
+    receipt.body.did === alice.did &&
+    receipt.body.card_id === card.id,
+  "publish complete: published receipt echoes did and card_id"
+);
+
+// An anonymous reader: fresh DID, anoncrypt query, answer sealed to it.
+const reader = await mintIdentity("https://smoke-reader.test/didcomm");
+const readerCtx = new DIDCommContext(reader.did, reader.didDoc, reader.secrets);
+{
+  const query = new Message({
+    id: randomUUID(),
+    typ: "application/didcomm-plain+json",
+    type: `${PF}/query`,
+    from: reader.did,
+    to: [mediatorDid],
+    created_time: Math.floor(Date.now() / 1000),
+    return_route: "all",
+    body: { did: alice.did, path: "profile.json" },
+  } as IMessage);
+  const [packed] = await query.pack_encrypted(
+    mediatorDid,
+    null,
+    null,
+    { resolve: resolveDIDCommDoc },
+    { get_secret: async () => null, find_secrets: async () => [] },
+    { forward: false }
+  );
+  const res = await fetch(base, {
+    method: "POST",
+    headers: { "content-type": ENCRYPTED },
+    body: packed,
+  });
+  check(res.ok, `anonymous query → ${res.status}`);
+  const answer = (await readerCtx.unpack(await res.text())).message;
+  const chain = answer.attachments as { id: string; data: { base64: string } }[];
+  check(
+    answer.type === `${PF}/answer` &&
+      answer.body.card === cardJws &&
+      chain.length === 2 &&
+      chain[0].id === rootCid &&
+      chain[1].id === leafCid &&
+      Buffer.from(chain[1].data.base64, "base64url").equals(Buffer.from(fileBytes)),
+    "answer carries the card and the verified proof chain"
+  );
+}
+
+{
+  const res = await fetch(`${base}/objects/${leafCid}`);
+  check(
+    res.ok &&
+      res.headers.get("content-type") === "application/vnd.ipld.raw" &&
+      Buffer.from(await res.arrayBuffer()).equals(Buffer.from(fileBytes)),
+    "GET /objects/<cid> serves the raw bytes"
+  );
+  const cardRes = await fetch(`${base}/card/${encodeURIComponent(alice.did)}`);
+  check(
+    cardRes.ok &&
+      cardRes.headers.get("content-type") === "application/jose" &&
+      (await cardRes.text()) === cardJws,
+    "GET /card/<did> serves the compact JWS"
+  );
+}
+
+// Takedown last — also keeps smoke runs from accreting objects on the
+// mediator: the card-only closure frees them for the purge.
+{
+  const takedown: RootCard = {
+    did: alice.did,
+    id: randomUUID(),
+    expires: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+  };
+  const takedownJws = await createCard(takedown, signer, edSecret.id);
+  const packed = await ctx.packEncrypted(
+    plaintext(`${PF}/publish`, { card: takedownJws }),
+    mediatorDid
+  );
+  const res = await fetch(base, {
+    method: "POST",
+    headers: { "content-type": ENCRYPTED },
+    body: packed,
+  });
+  const done = (await ctx.unpack(await res.text())).message;
+  check(done.type === `${PF}/published`, "takedown card published immediately");
+
+  const gone = await send(`${PF}/query`, { did: alice.did, path: "profile.json" });
+  check(
+    gone.type === `${PF}/answer` &&
+      gone.body.card === takedownJws &&
+      gone.attachments === undefined,
+    "queries after takedown answer with the signed card and nothing else"
+  );
+}
 
 // --- Edges --------------------------------------------------------------
 
