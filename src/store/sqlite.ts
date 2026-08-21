@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 
+import { chunked } from "./types.js";
 import type {
   AddRecipientResult,
   MediationStore,
   RecipientPage,
+  StoredCard,
   StoredMessage,
 } from "./types.js";
 
@@ -13,21 +15,27 @@ export interface SqliteStoreOptions {
   messageTtlSeconds?: number;
   /** Past this many waiting messages an account stops receiving new ones. */
   maxMessagesPerAccount?: number;
+  /** Unreferenced public-folder objects older than this are purged. */
+  stagedObjectTtlSeconds?: number;
 }
 
 const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60;
 const DEFAULT_MAX_MESSAGES = 1000;
+const DEFAULT_STAGED_OBJECT_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 export class SqliteStore implements MediationStore {
   private db: Database.Database;
   private ttlMs: number;
   private maxMessages: number;
+  private stagedTtlMs: number;
 
   /** `path` is a file path, or ":memory:" for tests. */
   constructor(path: string, options: SqliteStoreOptions = {}) {
     this.db = new Database(path);
     this.ttlMs = (options.messageTtlSeconds ?? DEFAULT_TTL_SECONDS) * 1000;
     this.maxMessages = options.maxMessagesPerAccount ?? DEFAULT_MAX_MESSAGES;
+    this.stagedTtlMs =
+      (options.stagedObjectTtlSeconds ?? DEFAULT_STAGED_OBJECT_TTL_SECONDS) * 1000;
 
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
@@ -56,6 +64,24 @@ export class SqliteStore implements MediationStore {
         secrets    TEXT NOT NULL,
         created_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS pf_cards (
+        owner_did  TEXT PRIMARY KEY,
+        card       TEXT NOT NULL,
+        root       TEXT,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS pf_objects (
+        cid        TEXT PRIMARY KEY,
+        bytes      BLOB NOT NULL,
+        size       INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS pf_refs (
+        owner_did TEXT NOT NULL,
+        cid       TEXT NOT NULL,
+        PRIMARY KEY (owner_did, cid)
+      );
+      CREATE INDEX IF NOT EXISTS pf_refs_cid ON pf_refs(cid);
     `);
   }
 
@@ -224,10 +250,82 @@ export class SqliteStore implements MediationStore {
     return deleted;
   }
 
+  async getCard(ownerDid: string): Promise<StoredCard | null> {
+    const row = this.db
+      .prepare("SELECT card, root FROM pf_cards WHERE owner_did = ?")
+      .get(ownerDid) as { card: string; root: string | null } | undefined;
+    return row === undefined ? null : { card: row.card, root: row.root };
+  }
+
+  async putCard(
+    ownerDid: string,
+    cardJws: string,
+    root: string | null,
+    closure: string[]
+  ): Promise<void> {
+    const upsert = this.db.prepare(
+      "INSERT INTO pf_cards (owner_did, card, root, updated_at) VALUES (?, ?, ?, ?) " +
+        "ON CONFLICT(owner_did) DO UPDATE SET card = excluded.card, " +
+        "root = excluded.root, updated_at = excluded.updated_at"
+    );
+    const clear = this.db.prepare("DELETE FROM pf_refs WHERE owner_did = ?");
+    const ref = this.db.prepare(
+      "INSERT OR IGNORE INTO pf_refs (owner_did, cid) VALUES (?, ?)"
+    );
+
+    this.db.transaction(() => {
+      upsert.run(ownerDid, cardJws, root, Date.now());
+      clear.run(ownerDid);
+      for (const cid of closure) {
+        ref.run(ownerDid, cid);
+      }
+    })();
+  }
+
+  async putObject(cid: string, bytes: Uint8Array): Promise<void> {
+    this.db
+      .prepare(
+        "INSERT OR IGNORE INTO pf_objects (cid, bytes, size, created_at) VALUES (?, ?, ?, ?)"
+      )
+      .run(cid, Buffer.from(bytes), bytes.length, Date.now());
+  }
+
+  async getObject(cid: string): Promise<Uint8Array | null> {
+    const row = this.db
+      .prepare("SELECT bytes FROM pf_objects WHERE cid = ?")
+      .get(cid) as { bytes: Buffer } | undefined;
+    return row === undefined ? null : new Uint8Array(row.bytes);
+  }
+
+  async objectsPresent(cids: string[]): Promise<Map<string, number>> {
+    const present = new Map<string, number>();
+    for (const chunk of chunked(cids)) {
+      const rows = this.db
+        .prepare(
+          `SELECT cid, size FROM pf_objects WHERE cid IN (${chunk.map(() => "?").join(", ")})`
+        )
+        .all(...chunk) as { cid: string; size: number }[];
+      for (const row of rows) {
+        present.set(row.cid, row.size);
+      }
+    }
+    return present;
+  }
+
   async purgeExpired(): Promise<number> {
-    return this.db
+    const messages = this.db
       .prepare("DELETE FROM messages WHERE expires_at <= ?")
       .run(Date.now()).changes;
+    // Objects nothing references any more: staged for a publish that never
+    // finished, or freed when a newer card replaced their closure. The grace
+    // period keeps multi-round publishes and the cache courtesy alive.
+    const objects = this.db
+      .prepare(
+        "DELETE FROM pf_objects WHERE created_at <= ? " +
+          "AND cid NOT IN (SELECT cid FROM pf_refs)"
+      )
+      .run(Date.now() - this.stagedTtlMs).changes;
+    return messages + objects;
   }
 
   close(): void {

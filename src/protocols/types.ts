@@ -43,6 +43,11 @@ export interface HandlerContext {
   session: Session | null;
   /** The DID proven by the envelope (authcrypt or signature); null if anonymous. */
   sender: string | null;
+  /**
+   * The public base URL the message arrived on — on Workers, the request's
+   * own origin. What public-folder answers build object links from.
+   */
+  publicUrl: string;
 }
 
 /**

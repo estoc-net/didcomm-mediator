@@ -13,6 +13,17 @@
 
 export type AddRecipientResult = "added" | "already-yours" | "taken";
 
+/** Keeps every statement under SQLite's and D1's bound-parameter ceilings. */
+export const SQL_CHUNK = 50;
+
+export function chunked<T>(items: T[], size: number = SQL_CHUNK): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
 export interface StoredMessage {
   id: string;
   packed: string;
@@ -23,6 +34,14 @@ export interface RecipientPage {
   recipients: string[];
   /** Entries remaining after this page. */
   remaining: number;
+}
+
+/** An owner's current public-folder card. */
+export interface StoredCard {
+  /** The compact JWS, exactly as published. */
+  card: string;
+  /** The tree's root CID, or null for a takedown card. */
+  root: string | null;
 }
 
 export interface MediationStore {
@@ -60,6 +79,34 @@ export interface MediationStore {
   /** Deletes the named messages; returns the ids that existed and are gone. */
   deleteMessages(ownerDid: string, ids: string[]): Promise<string[]>;
 
+  /*
+   * public-folder relay state: one current card per owner, a shared
+   * content-addressed object pool, and reference rows tying each owner's
+   * current publication closure to the objects it needs. Objects live
+   * exactly as long as some closure references them (plus a staging grace
+   * period for publishes still in flight) — refcounting, not policy.
+   */
+
+  /** The owner's current card, or null when this relay holds none. */
+  getCard(ownerDid: string): Promise<StoredCard | null>;
+  /**
+   * Make this card the served version, atomically replacing the owner's
+   * closure references with `closure` (every CID reachable from `root`;
+   * empty for a takedown card, whose root is null).
+   */
+  putCard(
+    ownerDid: string,
+    cardJws: string,
+    root: string | null,
+    closure: string[]
+  ): Promise<void>;
+  /** Store an object under its CID; the caller has verified bytes hash to it. */
+  putObject(cid: string, bytes: Uint8Array): Promise<void>;
+  getObject(cid: string): Promise<Uint8Array | null>;
+  /** Which of these CIDs are present, and their byte lengths. */
+  objectsPresent(cids: string[]): Promise<Map<string, number>>;
+
+  /** Also drops unreferenced objects past the staging grace period. */
   purgeExpired(): Promise<number>;
   close(): void;
 }

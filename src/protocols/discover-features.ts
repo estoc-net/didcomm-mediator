@@ -12,6 +12,7 @@ export const SUPPORTED_PROTOCOLS = [
   "https://didcomm.org/routing/2.0",
   "https://didcomm.org/discover-features/2.0",
   "https://didcomm.org/trust-ping/2.0",
+  "https://didcomm.org/public-folder/1.0",
 ];
 
 /**

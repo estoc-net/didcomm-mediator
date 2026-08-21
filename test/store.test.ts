@@ -56,6 +56,25 @@ describe("SqliteStore", () => {
     store.close();
   });
 
+  it("refcounts public-folder objects: referenced survive the purge, orphans go", async () => {
+    const store = new SqliteStore(":memory:", { stagedObjectTtlSeconds: -1 });
+    const bytes = new TextEncoder().encode("content");
+    await store.putObject("cid-kept", bytes);
+    await store.putObject("cid-orphan", bytes);
+    await store.putCard("did:example:alice", "jws", "cid-kept", ["cid-kept"]);
+
+    expect(await store.purgeExpired()).toBe(1);
+    expect(await store.getObject("cid-kept")).not.toBeNull();
+    expect(await store.getObject("cid-orphan")).toBeNull();
+
+    // A new closure frees the old one's references.
+    await store.putCard("did:example:alice", "jws2", null, []);
+    expect(await store.purgeExpired()).toBe(1);
+    expect(await store.getObject("cid-kept")).toBeNull();
+    expect((await store.getCard("did:example:alice"))?.root).toBeNull();
+    store.close();
+  });
+
   it("takes the keylist and inbox down with the account", async () => {
     const store = new SqliteStore(":memory:");
     await store.grantMediation("did:example:alice");

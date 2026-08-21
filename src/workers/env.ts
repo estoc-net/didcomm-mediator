@@ -18,6 +18,7 @@ export interface Env {
   MEDIATOR_CORS_ORIGIN?: string;
   MEDIATOR_MESSAGE_TTL_SECONDS?: string;
   MEDIATOR_MAX_MESSAGES_PER_ACCOUNT?: string;
+  MEDIATOR_MAX_PUBLICATION_BYTES?: string;
 }
 
 export interface WorkerDeps {
@@ -33,6 +34,9 @@ export function policyFromEnv(env: Env): MediatorPolicy {
     corsOrigin: env.MEDIATOR_CORS_ORIGIN ?? "*",
     messageTtlSeconds: Number(env.MEDIATOR_MESSAGE_TTL_SECONDS ?? 7 * 24 * 3600),
     maxMessagesPerAccount: Number(env.MEDIATOR_MAX_MESSAGES_PER_ACCOUNT ?? 1000),
+    maxPublicationBytes: Number(
+      env.MEDIATOR_MAX_PUBLICATION_BYTES ?? 16 * 1024 * 1024
+    ),
   };
 }
 

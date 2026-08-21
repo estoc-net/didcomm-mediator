@@ -179,6 +179,7 @@ export class InboxHub {
         sessions: this.sessions,
         session,
         sender: unpacked.verifiedFrom,
+        publicUrl: deps.identity.publicUrl,
       });
 
       if (packed !== null) {

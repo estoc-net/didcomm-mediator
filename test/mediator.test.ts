@@ -327,7 +327,7 @@ describe("supporting protocols", () => {
     expect(disclosures.map((d) => d.id)).toContain(
       "https://didcomm.org/coordinate-mediation/3.0"
     );
-    expect(disclosures).toHaveLength(5);
+    expect(disclosures).toHaveLength(6);
   });
 
   it("problem-reports an unsupported type to a proven sender", async () => {

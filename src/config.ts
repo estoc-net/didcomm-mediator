@@ -14,6 +14,12 @@ export interface MediatorPolicy {
   corsOrigin: string | boolean;
   messageTtlSeconds: number;
   maxMessagesPerAccount: number;
+  /**
+   * public-folder: the per-publication size ceiling (total file bytes under
+   * one card's root). Enforced before content travels — the root node's
+   * declared total — and again against actual stored bytes.
+   */
+  maxPublicationBytes: number;
 }
 
 export interface MediatorConfig extends MediatorPolicy {
@@ -77,5 +83,8 @@ export function configFromEnv(): MediatorConfig {
     corsOrigin: env("MEDIATOR_CORS_ORIGIN") ?? "*",
     messageTtlSeconds: Number(env("MEDIATOR_MESSAGE_TTL_SECONDS") ?? 7 * 24 * 3600),
     maxMessagesPerAccount: Number(env("MEDIATOR_MAX_MESSAGES_PER_ACCOUNT") ?? 1000),
+    maxPublicationBytes: Number(
+      env("MEDIATOR_MAX_PUBLICATION_BYTES") ?? 16 * 1024 * 1024
+    ),
   };
 }

@@ -24,6 +24,12 @@ import { FORWARD, forward } from "./routing.js";
 import { QUERIES, queries } from "./discover-features.js";
 import { PING, ping } from "./trust-ping.js";
 import { PROBLEM_REPORT } from "./problem-report.js";
+import {
+  PUBLISH as PF_PUBLISH,
+  QUERY as PF_QUERY,
+  publish as pfPublish,
+  query as pfQuery,
+} from "./public-folder.js";
 
 const HANDLERS: Record<string, Handler> = {
   [MEDIATE_REQUEST]: mediateRequest,
@@ -36,6 +42,8 @@ const HANDLERS: Record<string, Handler> = {
   [FORWARD]: forward,
   [QUERIES]: queries,
   [PING]: ping,
+  [PF_QUERY]: pfQuery,
+  [PF_PUBLISH]: pfPublish,
 };
 
 /**
@@ -91,7 +99,16 @@ export async function dispatch(
   const handler = HANDLERS[incoming.message.type] ?? unknownType;
   const reply = await handler(incoming, context);
 
-  if (reply === null || context.sender === null || !routed) {
+  // public-folder queries are anonymous by design: the requester's DID is a
+  // mailbox, not an identity, so an anoncrypted query is answered to the DID
+  // the plaintext claims — the reply only ever rides the connection the query
+  // came in on (return-route), so an unverifiable `from` misleads nobody but
+  // the sender itself.
+  const replyTo =
+    context.sender ??
+    (incoming.message.type === PF_QUERY ? incoming.from : null);
+
+  if (reply === null || replyTo === null || !routed) {
     return null;
   }
 
@@ -106,7 +123,7 @@ export async function dispatch(
       typ: "application/didcomm-plain+json",
       type: reply.type,
       from: asDid,
-      to: [context.sender],
+      to: [replyTo],
       created_time: Math.floor(Date.now() / 1000),
       thid,
       ...(reply.type === PROBLEM_REPORT ? { pthid: thid } : {}),
@@ -115,7 +132,7 @@ export async function dispatch(
         ? { attachments: reply.attachments }
         : {}),
     },
-    context.sender,
+    replyTo,
     asDid
   );
 }

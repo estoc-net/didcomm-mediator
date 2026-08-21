@@ -108,6 +108,7 @@ export function buildServer({
               sessions,
               session,
               sender: unpacked.verifiedFrom,
+              publicUrl: config.publicUrl,
             });
 
             if (packed !== null) {

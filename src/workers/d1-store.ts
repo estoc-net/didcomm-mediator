@@ -1,7 +1,9 @@
+import { chunked } from "../store/types.js";
 import type {
   AddRecipientResult,
   MediationStore,
   RecipientPage,
+  StoredCard,
   StoredMessage,
 } from "../store/types.js";
 
@@ -10,10 +12,13 @@ export interface D1StoreOptions {
   messageTtlSeconds?: number;
   /** Past this many waiting messages an account stops receiving new ones. */
   maxMessagesPerAccount?: number;
+  /** Unreferenced public-folder objects older than this are purged. */
+  stagedObjectTtlSeconds?: number;
 }
 
 const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60;
 const DEFAULT_MAX_MESSAGES = 1000;
+const DEFAULT_STAGED_OBJECT_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 /**
  * The same three tables as the SQLite store, on Cloudflare D1 — which *is*
@@ -31,12 +36,16 @@ export class D1Store implements MediationStore {
   private maxMessages: number;
   private ready: Promise<unknown> | null = null;
 
+  private stagedTtlMs: number;
+
   constructor(
     private db: D1Database,
     options: D1StoreOptions = {}
   ) {
     this.ttlMs = (options.messageTtlSeconds ?? DEFAULT_TTL_SECONDS) * 1000;
     this.maxMessages = options.maxMessagesPerAccount ?? DEFAULT_MAX_MESSAGES;
+    this.stagedTtlMs =
+      (options.stagedObjectTtlSeconds ?? DEFAULT_STAGED_OBJECT_TTL_SECONDS) * 1000;
   }
 
   private init(): Promise<unknown> {
@@ -79,6 +88,30 @@ export class D1Store implements MediationStore {
            created_at INTEGER NOT NULL
          )`
       ),
+      this.db.prepare(
+        `CREATE TABLE IF NOT EXISTS pf_cards (
+           owner_did  TEXT PRIMARY KEY,
+           card       TEXT NOT NULL,
+           root       TEXT,
+           updated_at INTEGER NOT NULL
+         )`
+      ),
+      this.db.prepare(
+        `CREATE TABLE IF NOT EXISTS pf_objects (
+           cid        TEXT PRIMARY KEY,
+           bytes      BLOB NOT NULL,
+           size       INTEGER NOT NULL,
+           created_at INTEGER NOT NULL
+         )`
+      ),
+      this.db.prepare(
+        `CREATE TABLE IF NOT EXISTS pf_refs (
+           owner_did TEXT NOT NULL,
+           cid       TEXT NOT NULL,
+           PRIMARY KEY (owner_did, cid)
+         )`
+      ),
+      this.db.prepare("CREATE INDEX IF NOT EXISTS pf_refs_cid ON pf_refs(cid)"),
     ]);
     return this.ready;
   }
@@ -264,13 +297,106 @@ export class D1Store implements MediationStore {
     return ids.filter((_, i) => results[i].meta.changes > 0);
   }
 
+  async getCard(ownerDid: string): Promise<StoredCard | null> {
+    await this.init();
+    const row = await this.db
+      .prepare("SELECT card, root FROM pf_cards WHERE owner_did = ?")
+      .bind(ownerDid)
+      .first<{ card: string; root: string | null }>();
+    return row === null ? null : { card: row.card, root: row.root };
+  }
+
+  async putCard(
+    ownerDid: string,
+    cardJws: string,
+    root: string | null,
+    closure: string[]
+  ): Promise<void> {
+    await this.init();
+    // One batch = one transaction: the card and its closure references land
+    // together or not at all.
+    await this.db.batch([
+      this.db
+        .prepare(
+          "INSERT INTO pf_cards (owner_did, card, root, updated_at) VALUES (?, ?, ?, ?) " +
+            "ON CONFLICT(owner_did) DO UPDATE SET card = excluded.card, " +
+            "root = excluded.root, updated_at = excluded.updated_at"
+        )
+        .bind(ownerDid, cardJws, root, Date.now()),
+      this.db.prepare("DELETE FROM pf_refs WHERE owner_did = ?").bind(ownerDid),
+      ...chunked(closure).map((chunk) =>
+        this.db
+          .prepare(
+            "INSERT OR IGNORE INTO pf_refs (owner_did, cid) VALUES " +
+              chunk.map(() => "(?, ?)").join(", ")
+          )
+          .bind(...chunk.flatMap((cid) => [ownerDid, cid]))
+      ),
+    ]);
+  }
+
+  async putObject(cid: string, bytes: Uint8Array): Promise<void> {
+    await this.init();
+    // D1 binds blobs as ArrayBuffers; slice out exactly the view's bytes.
+    const buffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength
+    );
+    await this.db
+      .prepare(
+        "INSERT OR IGNORE INTO pf_objects (cid, bytes, size, created_at) VALUES (?, ?, ?, ?)"
+      )
+      .bind(cid, buffer, bytes.length, Date.now())
+      .run();
+  }
+
+  async getObject(cid: string): Promise<Uint8Array | null> {
+    await this.init();
+    const row = await this.db
+      .prepare("SELECT bytes FROM pf_objects WHERE cid = ?")
+      .bind(cid)
+      .first<{ bytes: ArrayBuffer }>();
+    return row === null ? null : new Uint8Array(row.bytes);
+  }
+
+  async objectsPresent(cids: string[]): Promise<Map<string, number>> {
+    await this.init();
+    const present = new Map<string, number>();
+    if (cids.length === 0) {
+      return present;
+    }
+    const results = await this.db.batch(
+      chunked(cids).map((chunk) =>
+        this.db
+          .prepare(
+            `SELECT cid, size FROM pf_objects WHERE cid IN (${chunk.map(() => "?").join(", ")})`
+          )
+          .bind(...chunk)
+      )
+    );
+    for (const result of results) {
+      for (const row of result.results as { cid: string; size: number }[]) {
+        present.set(row.cid, row.size);
+      }
+    }
+    return present;
+  }
+
   async purgeExpired(): Promise<number> {
     await this.init();
-    const result = await this.db
-      .prepare("DELETE FROM messages WHERE expires_at <= ?")
-      .bind(Date.now())
-      .run();
-    return result.meta.changes;
+    const [messages, objects] = await this.db.batch([
+      this.db.prepare("DELETE FROM messages WHERE expires_at <= ?").bind(Date.now()),
+      // Objects nothing references any more: staged for a publish that never
+      // finished, or freed when a newer card replaced their closure. The
+      // grace period keeps multi-round publishes and the cache courtesy alive.
+      this.db
+        .prepare(
+          "DELETE FROM pf_objects WHERE created_at <= ? " +
+            "AND cid NOT IN (SELECT cid FROM pf_refs)"
+        )
+        .bind(Date.now() - this.stagedTtlMs),
+    ]);
+    return messages.meta.changes + objects.meta.changes;
   }
 
   close(): void {

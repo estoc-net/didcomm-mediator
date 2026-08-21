@@ -6,6 +6,12 @@ import type { DIDCommContext } from "./didcomm/didcomm.js";
 import { buildInvitation, invitationUrl } from "./oob.js";
 import { dispatch } from "./protocols/dispatch.js";
 import { SUPPORTED_PROTOCOLS } from "./protocols/discover-features.js";
+import {
+  DAG_JSON_MEDIA_TYPE,
+  RAW_MEDIA_TYPE,
+  isCid,
+  isDirCid,
+} from "./public-folder/objects.js";
 import type { LiveSink } from "./protocols/types.js";
 import type { MediationStore } from "./store/types.js";
 
@@ -83,6 +89,7 @@ export function buildApp({
         sessions,
         session: null,
         sender: unpacked.verifiedFrom,
+        publicUrl,
       });
     } catch (err) {
       log("envelope refused", err);
@@ -137,6 +144,35 @@ export function buildApp({
       );
     }
   }
+
+  // public-folder trustless reads: machine formats only on this hostname —
+  // never text/html (spec §4.4). Objects are content-addressed and immutable;
+  // cards are the owner's signed statement, replaced only by a newer publish.
+  app.get("/objects/:cid", async (c) => {
+    const cid = c.req.param("cid");
+    if (!isCid(cid)) {
+      return c.json({ error: "Not a CID" }, 400);
+    }
+    const bytes = await store.getObject(cid);
+    if (bytes === null) {
+      return c.json({ error: "No such object" }, 404);
+    }
+    return c.body(bytes.slice().buffer as ArrayBuffer, 200, {
+      "content-type": isDirCid(cid) ? DAG_JSON_MEDIA_TYPE : RAW_MEDIA_TYPE,
+      "cache-control": "public, max-age=31536000, immutable",
+    });
+  });
+
+  // The DID is percent-encoded in the path; Hono hands the param decoded.
+  // A takedown card is served like any other — the signed "nothing is
+  // published" is exactly what keeps the gone state verifiable.
+  app.get("/card/:did", async (c) => {
+    const stored = await store.getCard(c.req.param("did"));
+    if (stored === null) {
+      return c.json({ error: "No card for this DID" }, 404);
+    }
+    return c.body(stored.card, 200, { "content-type": "application/jose" });
+  });
 
   app.get("/health", (c) => c.json({ status: "ok" }));
 

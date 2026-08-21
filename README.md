@@ -100,6 +100,7 @@ nothing is configured, and no name is more real than another.
 | [routing/2.0](https://didcomm.org/routing/2.0) | inbound forward for mediated recipients |
 | [discover-features/2.0](https://didcomm.org/discover-features/2.0) | protocol disclosure |
 | [trust-ping/2.0](https://didcomm.org/trust-ping/2.0) | liveness |
+| [public-folder/1.0](https://github.com/estoc-net/public-folder) | signed public folders: anonymous `query` reads, owner `publish` writes (relay role) |
 | [out-of-band/2.0](https://didcomm.org/out-of-band/2.0) | invitation issuing (`GET /invitation`, `?_oob=` URL) |
 
 ## Transport
@@ -122,11 +123,19 @@ knows:
 - `GET /invitation` — the out-of-band 2.0 invitation as a plaintext JWM. The
   same invitation, base64url-encoded, rides the `?_oob=` parameter of the
   invitation URL — the string to put in a QR code for any standard wallet.
+- `GET /objects/<cid>` — public-folder trustless read: the object's bytes,
+  content-addressed and immutable (`application/vnd.ipld.raw` for files,
+  `application/vnd.ipld.dag-json` for directory nodes).
+- `GET /card/<did>` — the owner's current public-folder root card as a
+  compact JWS (`application/jose`); the DID is percent-encoded.
 - `GET /health`.
 
-Anonymous (anoncrypt) envelopes may only carry `forward` — the outer envelope
-of a forward is anonymous by design. Everything that grants or reads state
-requires an authcrypt envelope, and the proven sender DID *is* the account.
+Anonymous (anoncrypt) envelopes may only carry `forward` and the
+public-folder `query` — the outer envelope of a forward is anonymous by
+design, and a folder query is anonymous by design (the answer's authority is
+the owner's signature, not the asker's identity). Everything that grants or
+writes state requires an authcrypt envelope, and the proven sender DID *is*
+the account.
 
 ## Configuration
 
@@ -140,6 +149,7 @@ requires an authcrypt envelope, and the proven sender DID *is* the account.
 | `MEDIATOR_CORS_ORIGIN` | `*` | CORS for browser agents |
 | `MEDIATOR_MESSAGE_TTL_SECONDS` | 7 days | Unclaimed messages expire |
 | `MEDIATOR_MAX_MESSAGES_PER_ACCOUNT` | `1000` | Inbox quota |
+| `MEDIATOR_MAX_PUBLICATION_BYTES` | 16 MiB | public-folder: size ceiling per publication (total file bytes under one root) |
 
 ## Development
 
@@ -163,6 +173,15 @@ npm run typecheck
   claims: grants and reads key off the authcrypt key's DID.
 - **Live delivery pushes but never hands off.** A pushed message stays queued
   until `messages-received`; a dropped socket loses nothing.
+- **The public-folder relay holds no owner keys and interprets nothing.**
+  Everything it serves about an owner traces to the owner's signed root card;
+  its own work is hashing objects against the CIDs that name them. A
+  mediation relationship is what grants publish rights (for the account's DID
+  or any recipient DID bound to it); the served version is simply the most
+  recent authenticated publish. Objects are refcounted by the current
+  publications that reach them — replaced or never-completed publications
+  lose protection, and orphaned objects are reclaimed by the same purge that
+  expires messages (after a grace period, so multi-round publishes finish).
 
 - **The runtimes differ only where they must.** The wire surface is one Hono
   app (`src/app.ts`) and the protocol layer is runtime-free; Node keeps live
