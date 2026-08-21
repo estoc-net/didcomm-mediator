@@ -6,7 +6,7 @@ import WebSocket from "ws";
 import { DIDCommContext } from "../src/didcomm/didcomm.js";
 import { resolveDIDCommDoc } from "../src/didcomm/did-resolver.js";
 import { mintIdentity } from "../src/identity-core.js";
-import { createCard, type RootCard } from "../src/public-folder/card.js";
+import { createCard, type RootCard } from "@estoc/signed-dir";
 import {
   encodeDirNode,
   fileCid,

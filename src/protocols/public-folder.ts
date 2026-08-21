@@ -3,7 +3,7 @@ import type { IMessage } from "didcomm-node";
 import { base64urlToBytes, bytesToBase64url } from "@estoc/did-peer";
 
 import { didOf, type DIDCommContext, type Unpacked } from "../didcomm/didcomm.js";
-import { verifyCard, type RootCard } from "../public-folder/card.js";
+import { verifyCard, type RootCard } from "@estoc/signed-dir";
 import {
   DAG_JSON_MEDIA_TYPE,
   RAW_MEDIA_TYPE,

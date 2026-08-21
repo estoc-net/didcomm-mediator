@@ -6,7 +6,7 @@ import { base64urlToBytes, bytesToBase64url } from "@estoc/did-peer";
 
 import { buildServer } from "../src/server.js";
 import { mintIdentity, type MediatorIdentity } from "../src/identity-core.js";
-import { createCard, verifyCard, type RootCard } from "../src/public-folder/card.js";
+import { createCard, verifyCard, type RootCard } from "@estoc/signed-dir";
 import {
   DAG_JSON_MEDIA_TYPE,
   RAW_MEDIA_TYPE,
