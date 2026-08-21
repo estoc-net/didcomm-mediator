@@ -62,7 +62,19 @@ export class D1Store implements MediationStore {
   }
 
   private init(): Promise<unknown> {
-    this.ready ??= this.db.batch([
+    if (this.ready === null) {
+      this.ready = this.initTables();
+      // A failed init (D1 hiccup, lost migration race) must not poison the
+      // isolate — the next request retries from scratch.
+      this.ready.catch(() => {
+        this.ready = null;
+      });
+    }
+    return this.ready;
+  }
+
+  private async initTables(): Promise<void> {
+    await this.db.batch([
       this.db.prepare(
         `CREATE TABLE IF NOT EXISTS accounts (
            did        TEXT PRIMARY KEY,
@@ -127,7 +139,36 @@ export class D1Store implements MediationStore {
       ),
       this.db.prepare("CREATE INDEX IF NOT EXISTS pf_refs_cid ON pf_refs(cid)"),
     ]);
-    return this.ready;
+
+    // Deployments that ran the first public-folder version created pf_objects
+    // with `bytes BLOB NOT NULL`, which CREATE TABLE IF NOT EXISTS leaves in
+    // place — and under an R2 binding the metadata rows insert bytes as NULL,
+    // a constraint violation that INSERT OR IGNORE swallows *silently*.
+    // Rebuild once. The batch is a transaction; if a concurrent isolate wins
+    // the race this one throws, init retries, and the re-read sees the new
+    // schema.
+    const table = await this.db
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pf_objects'"
+      )
+      .first<{ sql: string }>();
+    if (table !== null && /bytes\s+BLOB\s+NOT\s+NULL/i.test(table.sql)) {
+      await this.db.batch([
+        this.db.prepare("ALTER TABLE pf_objects RENAME TO pf_objects_legacy"),
+        this.db.prepare(
+          `CREATE TABLE pf_objects (
+             cid        TEXT PRIMARY KEY,
+             bytes      BLOB,
+             size       INTEGER NOT NULL,
+             created_at INTEGER NOT NULL
+           )`
+        ),
+        this.db.prepare(
+          "INSERT INTO pf_objects SELECT cid, bytes, size, created_at FROM pf_objects_legacy"
+        ),
+        this.db.prepare("DROP TABLE pf_objects_legacy"),
+      ]);
+    }
   }
 
   async loadIdentity(): Promise<string | null> {
