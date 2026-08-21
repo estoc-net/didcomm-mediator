@@ -39,6 +39,15 @@ dev:workers` serves `did:web:localhost%3A8787` the same way.
 grant, keylist, anonymous forward, pickup, WebSocket live delivery — against
 any running mediator, whichever target it is.
 
+By default everything, public-folder object bytes included, lives in the one
+D1 database — zero extra services, but D1 caps a database at 500 MB on the
+free plan. For anything beyond light publishing, move the bytes to R2 (10 GB
+free, zero egress): create a bucket and uncomment the `r2_buckets` block in
+`wrangler.jsonc`, then redeploy. It's opt-in because enabling R2 requires a
+payment method on the Cloudflare account even inside the free tier. The
+switch is safe on a live mediator (existing D1-held objects keep serving),
+but don't remove the binding afterwards without clearing the `pf_*` tables.
+
 ## Quick start (Docker)
 
 ```sh
@@ -182,6 +191,11 @@ npm run typecheck
   publications that reach them — replaced or never-completed publications
   lose protection, and orphaned objects are reclaimed by the same purge that
   expires messages (after a grace period, so multi-round publishes finish).
+  On Workers the object *bytes* can optionally live in R2 while D1 keeps the
+  relational half (presence, sizes, refcounts); ordering makes the split
+  crash-safe — bytes land before the row that announces them, rows are
+  reclaimed before the bytes they point at, and any blob stranded in between
+  is invisible until the next content-addressed re-put heals it.
 
 - **The runtimes differ only where they must.** The wire surface is one Hono
   app (`src/app.ts`) and the protocol layer is runtime-free; Node keeps live

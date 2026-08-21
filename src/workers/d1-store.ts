@@ -14,6 +14,17 @@ export interface D1StoreOptions {
   maxMessagesPerAccount?: number;
   /** Unreferenced public-folder objects older than this are purged. */
   stagedObjectTtlSeconds?: number;
+  /**
+   * Optional R2 bucket for public-folder object bytes. Without it the bytes
+   * live as D1 blobs — fine for light use, but D1 caps a database at 500 MB
+   * on the free plan and the whole mediator shares it. With it, D1 keeps only
+   * the metadata rows (cid, size, refcounts — the relational half) and R2
+   * holds the bytes. Objects already stored as blobs keep serving from D1,
+   * so the binding can be added to a live deployment; removing it later
+   * orphans any R2-held bytes (their rows would claim presence), so don't —
+   * or clear pf_objects/pf_cards/pf_refs when you do.
+   */
+  objects?: R2Bucket;
 }
 
 const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -37,6 +48,7 @@ export class D1Store implements MediationStore {
   private ready: Promise<unknown> | null = null;
 
   private stagedTtlMs: number;
+  private objects: R2Bucket | null;
 
   constructor(
     private db: D1Database,
@@ -46,6 +58,7 @@ export class D1Store implements MediationStore {
     this.maxMessages = options.maxMessagesPerAccount ?? DEFAULT_MAX_MESSAGES;
     this.stagedTtlMs =
       (options.stagedObjectTtlSeconds ?? DEFAULT_STAGED_OBJECT_TTL_SECONDS) * 1000;
+    this.objects = options.objects ?? null;
   }
 
   private init(): Promise<unknown> {
@@ -97,9 +110,10 @@ export class D1Store implements MediationStore {
          )`
       ),
       this.db.prepare(
+        // bytes is null when the object's bytes live in R2 instead.
         `CREATE TABLE IF NOT EXISTS pf_objects (
            cid        TEXT PRIMARY KEY,
-           bytes      BLOB NOT NULL,
+           bytes      BLOB,
            size       INTEGER NOT NULL,
            created_at INTEGER NOT NULL
          )`
@@ -337,11 +351,25 @@ export class D1Store implements MediationStore {
 
   async putObject(cid: string, bytes: Uint8Array): Promise<void> {
     await this.init();
-    // D1 binds blobs as ArrayBuffers; slice out exactly the view's bytes.
+    // D1 and R2 both take ArrayBuffers; slice out exactly the view's bytes.
     const buffer = bytes.buffer.slice(
       bytes.byteOffset,
       bytes.byteOffset + bytes.byteLength
     );
+    if (this.objects !== null) {
+      // Bytes to R2 first, then the metadata row. A crash in between leaves
+      // an R2 blob no row points at — invisible, and the next publish of the
+      // same content re-puts it (content-addressed, so idempotent). The
+      // reverse order could leave a row claiming bytes that never landed.
+      await this.objects.put(cid, buffer as ArrayBuffer);
+      await this.db
+        .prepare(
+          "INSERT OR IGNORE INTO pf_objects (cid, bytes, size, created_at) VALUES (?, NULL, ?, ?)"
+        )
+        .bind(cid, bytes.length, Date.now())
+        .run();
+      return;
+    }
     await this.db
       .prepare(
         "INSERT OR IGNORE INTO pf_objects (cid, bytes, size, created_at) VALUES (?, ?, ?, ?)"
@@ -352,11 +380,23 @@ export class D1Store implements MediationStore {
 
   async getObject(cid: string): Promise<Uint8Array | null> {
     await this.init();
+    // The row is the source of truth for presence; bytes come from the row's
+    // blob or, when that is null, from R2. Blob rows written before an R2
+    // binding was added keep serving as-is.
     const row = await this.db
       .prepare("SELECT bytes FROM pf_objects WHERE cid = ?")
       .bind(cid)
-      .first<{ bytes: ArrayBuffer }>();
-    return row === null ? null : new Uint8Array(row.bytes);
+      .first<{ bytes: ArrayBuffer | null }>();
+    if (row === null) {
+      return null;
+    }
+    if (row.bytes !== null) {
+      return new Uint8Array(row.bytes);
+    }
+    // A null miss here (bucket gone, or the binding was removed) is a
+    // storage hole the protocol layer reports as e.p.me.res.storage.
+    const object = await this.objects?.get(cid);
+    return object == null ? null : new Uint8Array(await object.arrayBuffer());
   }
 
   async objectsPresent(cids: string[]): Promise<Map<string, number>> {
@@ -384,19 +424,53 @@ export class D1Store implements MediationStore {
 
   async purgeExpired(): Promise<number> {
     await this.init();
-    const [messages, objects] = await this.db.batch([
-      this.db.prepare("DELETE FROM messages WHERE expires_at <= ?").bind(Date.now()),
-      // Objects nothing references any more: staged for a publish that never
-      // finished, or freed when a newer card replaced their closure. The
-      // grace period keeps multi-round publishes and the cache courtesy alive.
-      this.db
-        .prepare(
-          "DELETE FROM pf_objects WHERE created_at <= ? " +
-            "AND cid NOT IN (SELECT cid FROM pf_refs)"
+    // Objects nothing references any more: staged for a publish that never
+    // finished, or freed when a newer card replaced their closure. The
+    // grace period keeps multi-round publishes and the cache courtesy alive.
+    const orphans =
+      "created_at <= ? AND cid NOT IN (SELECT cid FROM pf_refs)";
+    const cutoff = Date.now() - this.stagedTtlMs;
+
+    if (this.objects === null) {
+      const [messages, objects] = await this.db.batch([
+        this.db
+          .prepare("DELETE FROM messages WHERE expires_at <= ?")
+          .bind(Date.now()),
+        this.db.prepare(`DELETE FROM pf_objects WHERE ${orphans}`).bind(cutoff),
+      ]);
+      return messages.meta.changes + objects.meta.changes;
+    }
+
+    // With R2 the two stores are reclaimed in row-first order: a crash after
+    // the row deletes leaves invisible R2 blobs, which the same idempotent
+    // re-put heals; deleting R2 first could leave rows claiming lost bytes.
+    const { results } = await this.db
+      .prepare(`SELECT cid FROM pf_objects WHERE ${orphans}`)
+      .bind(cutoff)
+      .all<{ cid: string }>();
+    const cids = results.map((row) => row.cid);
+    if (cids.length > 0) {
+      await this.db.batch(
+        chunked(cids).map((chunk) =>
+          this.db
+            .prepare(
+              `DELETE FROM pf_objects WHERE cid IN (${chunk.map(() => "?").join(", ")})`
+            )
+            .bind(...chunk)
         )
-        .bind(Date.now() - this.stagedTtlMs),
-    ]);
-    return messages.meta.changes + objects.meta.changes;
+      );
+      // R2 bulk delete takes up to 1000 keys; deleting a key that only ever
+      // existed as a D1 blob row is a no-op.
+      for (const chunk of chunked(cids, 1000)) {
+        await this.objects.delete(chunk);
+      }
+    }
+
+    const messages = await this.db
+      .prepare("DELETE FROM messages WHERE expires_at <= ?")
+      .bind(Date.now())
+      .run();
+    return messages.meta.changes + cids.length;
   }
 
   close(): void {

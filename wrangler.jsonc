@@ -37,6 +37,17 @@
       "database_id": "e57679e6-e700-46e9-abbf-a9b529a5a67d"
     }
   ],
+  // Optional: keep public-folder object bytes in R2 instead of D1 blobs
+  // (recommended for anything beyond light publishing — D1 caps a database
+  // at 500 MB on the free plan and the whole mediator shares it). Off by
+  // default because enabling R2 requires a payment method on the account,
+  // and the one-click deploy must not. To turn it on:
+  //   wrangler r2 bucket create didcomm-mediator-objects
+  // then uncomment and redeploy. Existing D1-blob objects keep serving;
+  // don't remove the binding later without clearing the pf_* tables.
+  // "r2_buckets": [
+  //   { "binding": "PF_OBJECTS", "bucket_name": "didcomm-mediator-objects" }
+  // ],
   // Hourly purge of expired messages.
   "triggers": { "crons": ["17 * * * *"] },
   "observability": { "enabled": true }
