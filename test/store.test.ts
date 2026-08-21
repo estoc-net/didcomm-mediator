@@ -1,3 +1,8 @@
+import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
 import { SqliteStore } from "../src/store/sqlite.js";
@@ -73,6 +78,36 @@ describe("SqliteStore", () => {
     expect(await store.getObject("cid-kept")).toBeNull();
     expect((await store.getCard("did:example:alice"))?.root).toBeNull();
     store.close();
+  });
+
+  it("migrates a legacy pf_objects table, keeping stored objects", async () => {
+    const path = join(tmpdir(), `mediator-migration-${randomUUID()}.db`);
+    // The first public-folder version: bytes NOT NULL, no store column.
+    const legacy = new Database(path);
+    legacy.exec(`
+      CREATE TABLE pf_objects (
+        cid        TEXT PRIMARY KEY,
+        bytes      BLOB NOT NULL,
+        size       INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+    `);
+    legacy
+      .prepare("INSERT INTO pf_objects VALUES (?, ?, ?, ?)")
+      .run("cid-legacy", Buffer.from("held"), 4, Date.now());
+    legacy.close();
+
+    const store = new SqliteStore(path);
+    expect(Array.from(await store.getObject("cid-legacy") ?? [])).toEqual(
+      Array.from(Buffer.from("held"))
+    );
+    await store.putObject("cid-new", new TextEncoder().encode("fresh"));
+    expect(await store.getObject("cid-new")).not.toBeNull();
+    expect((await store.objectsPresent(["cid-legacy", "cid-new"])).size).toBe(2);
+    store.close();
+    rmSync(path, { force: true });
+    rmSync(`${path}-wal`, { force: true });
+    rmSync(`${path}-shm`, { force: true });
   });
 
   it("takes the keylist and inbox down with the account", async () => {

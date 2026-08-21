@@ -192,10 +192,11 @@ npm run typecheck
   lose protection, and orphaned objects are reclaimed by the same purge that
   expires messages (after a grace period, so multi-round publishes finish).
   On Workers the object *bytes* can optionally live in R2 while D1 keeps the
-  relational half (presence, sizes, refcounts); ordering makes the split
-  crash-safe — bytes land before the row that announces them, rows are
-  reclaimed before the bytes they point at, and any blob stranded in between
-  is invisible until the next content-addressed re-put heals it.
+  relational half (presence, sizes, refcounts) — each row explicitly names
+  the backend holding its bytes; ordering makes the split crash-safe — bytes
+  land before the row that announces them, rows are reclaimed before the
+  bytes they point at, and any blob stranded in between is invisible until
+  the next content-addressed re-put heals it.
 
 - **The runtimes differ only where they must.** The wire surface is one Hono
   app (`src/app.ts`) and the protocol layer is runtime-free; Node keeps live

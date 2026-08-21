@@ -122,12 +122,15 @@ export class D1Store implements MediationStore {
          )`
       ),
       this.db.prepare(
-        // bytes is null when the object's bytes live in R2 instead.
+        // Each row declares where its bytes live: 'inline' = the row's own
+        // bytes column (then bytes is non-null), 'r2' = the PF_OBJECTS
+        // bucket. Future backends add names, never new NULL conventions.
         `CREATE TABLE IF NOT EXISTS pf_objects (
            cid        TEXT PRIMARY KEY,
            bytes      BLOB,
            size       INTEGER NOT NULL,
-           created_at INTEGER NOT NULL
+           created_at INTEGER NOT NULL,
+           store      TEXT NOT NULL DEFAULT 'inline'
          )`
       ),
       this.db.prepare(
@@ -140,13 +143,15 @@ export class D1Store implements MediationStore {
       this.db.prepare("CREATE INDEX IF NOT EXISTS pf_refs_cid ON pf_refs(cid)"),
     ]);
 
-    // Deployments that ran the first public-folder version created pf_objects
-    // with `bytes BLOB NOT NULL`, which CREATE TABLE IF NOT EXISTS leaves in
-    // place — and under an R2 binding the metadata rows insert bytes as NULL,
-    // a constraint violation that INSERT OR IGNORE swallows *silently*.
-    // Rebuild once. The batch is a transaction; if a concurrent isolate wins
-    // the race this one throws, init retries, and the re-read sees the new
-    // schema.
+    // Two earlier pf_objects schemas exist in the wild. The first public-
+    // folder version had `bytes BLOB NOT NULL` — fatal under R2, because the
+    // metadata rows insert bytes as NULL and INSERT OR IGNORE swallows the
+    // constraint violation *silently*; rebuild to the current shape, keeping
+    // every stored object. The brief second version made bytes nullable but
+    // encoded the backend implicitly as bytes-IS-NULL; give it the explicit
+    // store column and backfill. Each migration is one batch = one
+    // transaction; if a concurrent isolate wins the race this one throws,
+    // init retries, and the re-read sees the new schema.
     const table = await this.db
       .prepare(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pf_objects'"
@@ -160,13 +165,24 @@ export class D1Store implements MediationStore {
              cid        TEXT PRIMARY KEY,
              bytes      BLOB,
              size       INTEGER NOT NULL,
-             created_at INTEGER NOT NULL
+             created_at INTEGER NOT NULL,
+             store      TEXT NOT NULL DEFAULT 'inline'
            )`
         ),
         this.db.prepare(
-          "INSERT INTO pf_objects SELECT cid, bytes, size, created_at FROM pf_objects_legacy"
+          "INSERT INTO pf_objects (cid, bytes, size, created_at, store) " +
+            "SELECT cid, bytes, size, created_at, 'inline' FROM pf_objects_legacy"
         ),
         this.db.prepare("DROP TABLE pf_objects_legacy"),
+      ]);
+    } else if (table !== null && !/store\s+TEXT/i.test(table.sql)) {
+      await this.db.batch([
+        this.db.prepare(
+          "ALTER TABLE pf_objects ADD COLUMN store TEXT NOT NULL DEFAULT 'inline'"
+        ),
+        this.db.prepare(
+          "UPDATE pf_objects SET store = 'r2' WHERE bytes IS NULL"
+        ),
       ]);
     }
   }
@@ -405,7 +421,8 @@ export class D1Store implements MediationStore {
       await this.objects.put(cid, buffer as ArrayBuffer);
       await this.db
         .prepare(
-          "INSERT OR IGNORE INTO pf_objects (cid, bytes, size, created_at) VALUES (?, NULL, ?, ?)"
+          "INSERT OR IGNORE INTO pf_objects (cid, bytes, size, created_at, store) " +
+            "VALUES (?, NULL, ?, ?, 'r2')"
         )
         .bind(cid, bytes.length, Date.now())
         .run();
@@ -413,7 +430,8 @@ export class D1Store implements MediationStore {
     }
     await this.db
       .prepare(
-        "INSERT OR IGNORE INTO pf_objects (cid, bytes, size, created_at) VALUES (?, ?, ?, ?)"
+        "INSERT OR IGNORE INTO pf_objects (cid, bytes, size, created_at, store) " +
+          "VALUES (?, ?, ?, ?, 'inline')"
       )
       .bind(cid, buffer, bytes.length, Date.now())
       .run();
@@ -421,23 +439,27 @@ export class D1Store implements MediationStore {
 
   async getObject(cid: string): Promise<Uint8Array | null> {
     await this.init();
-    // The row is the source of truth for presence; bytes come from the row's
-    // blob or, when that is null, from R2. Blob rows written before an R2
-    // binding was added keep serving as-is.
+    // The row is the source of truth for presence; its store column names
+    // where the bytes live. Inline rows written before an R2 binding was
+    // added keep serving as-is.
     const row = await this.db
-      .prepare("SELECT bytes FROM pf_objects WHERE cid = ?")
+      .prepare("SELECT bytes, store FROM pf_objects WHERE cid = ?")
       .bind(cid)
-      .first<{ bytes: ArrayBuffer | null }>();
+      .first<{ bytes: ArrayBuffer | null; store: string }>();
     if (row === null) {
       return null;
     }
-    if (row.bytes !== null) {
-      return new Uint8Array(row.bytes);
+    if (row.store === "inline") {
+      return row.bytes === null ? null : new Uint8Array(row.bytes);
     }
-    // A null miss here (bucket gone, or the binding was removed) is a
-    // storage hole the protocol layer reports as e.p.me.res.storage.
-    const object = await this.objects?.get(cid);
-    return object == null ? null : new Uint8Array(await object.arrayBuffer());
+    if (row.store === "r2") {
+      // A null miss (bucket gone, or the binding was removed) is a storage
+      // hole the protocol layer reports as e.p.me.res.storage.
+      const object = await this.objects?.get(cid);
+      return object == null ? null : new Uint8Array(await object.arrayBuffer());
+    }
+    // A backend this build does not know — same storage hole.
+    return null;
   }
 
   async objectsPresent(cids: string[]): Promise<Map<string, number>> {
@@ -486,9 +508,9 @@ export class D1Store implements MediationStore {
     // the row deletes leaves invisible R2 blobs, which the same idempotent
     // re-put heals; deleting R2 first could leave rows claiming lost bytes.
     const { results } = await this.db
-      .prepare(`SELECT cid FROM pf_objects WHERE ${orphans}`)
+      .prepare(`SELECT cid, store FROM pf_objects WHERE ${orphans}`)
       .bind(cutoff)
-      .all<{ cid: string }>();
+      .all<{ cid: string; store: string }>();
     const cids = results.map((row) => row.cid);
     if (cids.length > 0) {
       await this.db.batch(
@@ -500,9 +522,12 @@ export class D1Store implements MediationStore {
             .bind(...chunk)
         )
       );
-      // R2 bulk delete takes up to 1000 keys; deleting a key that only ever
-      // existed as a D1 blob row is a no-op.
-      for (const chunk of chunked(cids, 1000)) {
+      // Only rows that declared R2 have bytes there; bulk delete takes up
+      // to 1000 keys.
+      const r2Cids = results
+        .filter((row) => row.store === "r2")
+        .map((row) => row.cid);
+      for (const chunk of chunked(r2Cids, 1000)) {
         await this.objects.delete(chunk);
       }
     }

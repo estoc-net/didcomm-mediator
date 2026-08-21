@@ -72,9 +72,10 @@ export class SqliteStore implements MediationStore {
       );
       CREATE TABLE IF NOT EXISTS pf_objects (
         cid        TEXT PRIMARY KEY,
-        bytes      BLOB NOT NULL,
+        bytes      BLOB,
         size       INTEGER NOT NULL,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        store      TEXT NOT NULL DEFAULT 'inline'
       );
       CREATE TABLE IF NOT EXISTS pf_refs (
         owner_did TEXT NOT NULL,
@@ -83,6 +84,33 @@ export class SqliteStore implements MediationStore {
       );
       CREATE INDEX IF NOT EXISTS pf_refs_cid ON pf_refs(cid);
     `);
+
+    // Each row declares where its bytes live: 'inline' = the row's own bytes
+    // column; other names are external backends (the Workers store has 'r2').
+    // The first public-folder version predates the column and had bytes NOT
+    // NULL — rebuild once, keeping every stored object.
+    const table = this.db
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pf_objects'"
+      )
+      .get() as { sql: string };
+    if (/bytes\s+BLOB\s+NOT\s+NULL/i.test(table.sql)) {
+      this.db.exec(`
+        BEGIN;
+        ALTER TABLE pf_objects RENAME TO pf_objects_legacy;
+        CREATE TABLE pf_objects (
+          cid        TEXT PRIMARY KEY,
+          bytes      BLOB,
+          size       INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          store      TEXT NOT NULL DEFAULT 'inline'
+        );
+        INSERT INTO pf_objects (cid, bytes, size, created_at, store)
+          SELECT cid, bytes, size, created_at, 'inline' FROM pf_objects_legacy;
+        DROP TABLE pf_objects_legacy;
+        COMMIT;
+      `);
+    }
   }
 
   async loadIdentity(): Promise<string | null> {
@@ -285,16 +313,25 @@ export class SqliteStore implements MediationStore {
   async putObject(cid: string, bytes: Uint8Array): Promise<void> {
     this.db
       .prepare(
-        "INSERT OR IGNORE INTO pf_objects (cid, bytes, size, created_at) VALUES (?, ?, ?, ?)"
+        "INSERT OR IGNORE INTO pf_objects (cid, bytes, size, created_at, store) " +
+          "VALUES (?, ?, ?, ?, 'inline')"
       )
       .run(cid, Buffer.from(bytes), bytes.length, Date.now());
   }
 
   async getObject(cid: string): Promise<Uint8Array | null> {
     const row = this.db
-      .prepare("SELECT bytes FROM pf_objects WHERE cid = ?")
-      .get(cid) as { bytes: Buffer } | undefined;
-    return row === undefined ? null : new Uint8Array(row.bytes);
+      .prepare("SELECT bytes, store FROM pf_objects WHERE cid = ?")
+      .get(cid) as { bytes: Buffer | null; store: string } | undefined;
+    if (row === undefined) {
+      return null;
+    }
+    // A backend this build cannot reach (or a corrupt inline row) is a
+    // storage hole; the protocol layer reports it as e.p.me.res.storage.
+    if (row.store !== "inline" || row.bytes === null) {
+      return null;
+    }
+    return new Uint8Array(row.bytes);
   }
 
   async objectsPresent(cids: string[]): Promise<Map<string, number>> {
