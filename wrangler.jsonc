@@ -57,7 +57,12 @@
   "env": {
     "r2": {
       "name": "didcomm-mediator",
-      "vars": { "MEDIATOR_DID_METHODS": "web,peer2" },
+      "vars": {
+        "MEDIATOR_DID_METHODS": "web,peer2",
+        // 4 MiB publication ceiling; the code default (16 MiB) is more than
+        // this deployment wants to hold per DID.
+        "MEDIATOR_MAX_PUBLICATION_BYTES": "4194304"
+      },
       "durable_objects": {
         "bindings": [{ "name": "INBOX", "class_name": "InboxHub" }]
       },
