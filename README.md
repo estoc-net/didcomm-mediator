@@ -190,6 +190,10 @@ npm run policy -- --db ./data/mediator.db block did:web:evil.example --note "tic
 npm run policy -- --db ./data/mediator.db quarantine did:web:reported.example
 ```
 
+`status` answers whether a DID or CID is on this mediator from metadata
+alone — card, closure counts, object sizes, references, rule — without
+ever fetching content, which is what an abuse assessment needs (the
+public HTTP face deliberately 404s hidden and absent alike).
 `block`, `legal`, and `allow` take a DID or a CID (the kind is inferred),
 an optional `--hold 365d` and `--note`; `clear` removes a rule, and every
 change — CLI or not — lands on the audit trail. `quarantine` is the

@@ -39,6 +39,8 @@ Usage:
 Commands (the subject's kind — DID or CID — is inferred from its shape):
   list                                          every rule
   audit [--limit <n>]                           operator-action trail, newest first
+  status <did|cid>                              is it on this mediator? metadata only,
+                                                never the bytes (exit 1 = not stored)
   block <did|cid> [--hold <t>] [--note <text>]  serve (and publish) as if absent
   legal <did|cid> [--hold <t>] [--note <text>]  same, but HTTP reads may say 451
   allow <did|cid> [--note <text>]               allowlist under a deny default
@@ -323,6 +325,51 @@ export async function runPolicy(
           print(formatAudit(entry));
         }
         return 0;
+      }
+      case "status": {
+        // The assessment tool: answers "do I possess this?" from metadata
+        // alone. The public HTTP face can't (hidden and absent are the same
+        // 404 by design), and fetching the object to check would put the
+        // bytes in front of the operator — exactly what an abuse assessment
+        // must not do.
+        const { kind, subject } = subjectOf(parsed);
+        const rule = (await store.policyRules(kind, [subject])).get(subject);
+        if (kind === "did") {
+          const card = await store.getCard(subject);
+          if (card === null) {
+            print("no card — this mediator holds nothing for that DID");
+          } else if (card.root === null) {
+            print("takedown card (root null) — publisher withdrew the folder");
+          } else {
+            const closure = await store.closureOf(subject);
+            const present = await store.objectsPresent(closure);
+            let bytes = 0;
+            for (const size of present.values()) {
+              bytes += size;
+            }
+            print(`card present, root ${card.root}`);
+            print(
+              `closure ${closure.length} object${closure.length === 1 ? "" : "s"}, ` +
+                `${present.size} stored, ${bytes} bytes`
+            );
+          }
+          print(rule === undefined ? "no rule" : `rule: ${formatRule(rule)}`);
+          return card === null ? 1 : 0;
+        }
+        const size = (await store.objectsPresent([subject])).get(subject);
+        if (size === undefined) {
+          print("not stored");
+        } else {
+          print(`stored, ${size} bytes`);
+          const owners = await store.referencingOwners(subject);
+          print(
+            owners.length === 0
+              ? "referenced by no current publication"
+              : `referenced by ${owners.join(", ")}`
+          );
+        }
+        print(rule === undefined ? "no rule" : `rule: ${formatRule(rule)}`);
+        return size === undefined ? 1 : 0;
       }
       case "block":
       case "legal":

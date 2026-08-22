@@ -134,6 +134,51 @@ describe("policy CLI against a SQLite mediator", () => {
     expect(audit.lines).toHaveLength(5);
   });
 
+  it("status answers presence from metadata without touching bytes", async () => {
+    const dbPath = join(dir, "status.db");
+    const owner = "did:web:owner.example";
+    const leaf = new TextEncoder().encode("leaf bytes");
+    const leafCid = await fileCid(leaf);
+    const rootCid = await fileCid(new TextEncoder().encode("root node"));
+
+    const seed = new SqliteStore(dbPath);
+    await seed.putCard(owner, "jws-goes-here", rootCid, [rootCid, leafCid]);
+    await seed.putObject(leafCid, leaf);
+    seed.close();
+
+    // A DID with a card: root, closure counts, and stored sizes — only the
+    // leaf's bytes actually landed, and only its size is counted.
+    const did = await cli(dbPath, "status", owner);
+    expect(did.code).toBe(0);
+    expect(did.output).toContain(`card present, root ${rootCid}`);
+    expect(did.output).toContain(`closure 2 objects, 1 stored, ${leaf.length} bytes`);
+    expect(did.output).toContain("no rule");
+
+    // A stored CID: size and referencing publications, never the content.
+    const cid = await cli(dbPath, "status", leafCid);
+    expect(cid.code).toBe(0);
+    expect(cid.output).toContain(`stored, ${leaf.length} bytes`);
+    expect(cid.output).toContain(`referenced by ${owner}`);
+    expect(cid.output).not.toContain("leaf bytes");
+
+    // Absence is exit 1 — the scriptable "not on this mediator".
+    const missingCid = await cli(
+      dbPath, "status", await fileCid(new TextEncoder().encode("elsewhere"))
+    );
+    expect(missingCid.code).toBe(1);
+    expect(missingCid.output).toContain("not stored");
+    const missingDid = await cli(dbPath, "status", "did:web:quiet.example");
+    expect(missingDid.code).toBe(1);
+    expect(missingDid.output).toContain("no card");
+
+    // After a quarantine the rule shows up alongside presence.
+    await cli(dbPath, "quarantine", owner);
+    const after = await cli(dbPath, "status", leafCid);
+    expect(after.code).toBe(0);
+    expect(after.output).toContain(`rule: cid block ${leafCid}`);
+    expect(after.output).toContain("hold until");
+  });
+
   it("quarantine of a DID with no publication still blocks the DID", async () => {
     const dbPath = join(dir, "empty.db");
     new SqliteStore(dbPath).close();

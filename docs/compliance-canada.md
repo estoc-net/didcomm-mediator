@@ -63,9 +63,24 @@ platform (Cloudflare enforces its own ToS on CSAM, often faster than the
 law), or from law enforcement directly. Note the date and time you were
 advised — the clock starts there.
 
-**2. Assess.** Confirm the material is actually on this mediator:
-`GET /card/<did>` for the folder's root card, `GET /objects/<cid>` for a
-named object. Look no further than needed to act, and never redistribute.
+**2. Assess.** Confirm the material is actually on this mediator — from
+metadata, never by fetching it:
+
+```sh
+npm run policy -- --remote status <did|cid>
+```
+
+For a DID this reports whether a card is stored, its root, and how much
+of its closure this mediator holds; for a CID, whether the bytes are
+stored (and which publications reference them). Exit 1 means not stored.
+
+Do **not** fetch the content to check — not via the public HTTP face
+(`/card/<did>`, `/objects/<cid>`), not any other way. Fetching downloads
+the reported material itself; look no further than the report plus this
+metadata, and never redistribute. The HTTP face is also the wrong
+instrument: policy rules and a `deny` serve default answer hidden and
+absent with the same 404, so it cannot say what you possess — the store
+can, and `status` asks the store.
 
 **3. Quarantine — immediately, before anything else.**
 
