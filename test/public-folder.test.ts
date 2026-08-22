@@ -222,6 +222,9 @@ describe("public-folder/1.0 publish", () => {
     expect(done?.type).toBe(PUBLISHED);
     expect(done?.body.did).toBe(owner.did);
     expect(done?.body.card_id).toBe(card.id);
+    // The lease promise is required — always a date, never absent.
+    const retainUntil = Date.parse(done?.body.retain_until as string);
+    expect(retainUntil).toBeGreaterThan(Date.now());
   });
 
   it("is idempotent: re-sending the current card yields a fresh receipt", async () => {
@@ -406,6 +409,8 @@ describe("public-folder/1.0 takedown", () => {
     const takedown = await signCard(owner, freshCard());
     const done = await publishRound(owner, takedown);
     expect(done?.type).toBe(PUBLISHED);
+    // A takedown card is a leased publication too: same required promise.
+    expect(Date.parse(done?.body.retain_until as string)).toBeGreaterThan(Date.now());
 
     // Whatever the path, the signed "nothing is published" is the answer.
     const reply = await send(reader, QUERY, {

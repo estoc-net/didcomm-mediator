@@ -20,6 +20,13 @@ export interface MediatorPolicy {
    * declared total — and again against actual stored bytes.
    */
   maxPublicationBytes: number;
+  /**
+   * public-folder: the lease length promised in every `published` receipt
+   * (`retain_until` = now + this). A lower bound — this relay never collects
+   * a live publication, so the promise is trivially honoured; republishing
+   * renews it.
+   */
+  publicationRetainSeconds: number;
 }
 
 export interface MediatorConfig extends MediatorPolicy {
@@ -85,6 +92,9 @@ export function configFromEnv(): MediatorConfig {
     maxMessagesPerAccount: Number(env("MEDIATOR_MAX_MESSAGES_PER_ACCOUNT") ?? 1000),
     maxPublicationBytes: Number(
       env("MEDIATOR_MAX_PUBLICATION_BYTES") ?? 16 * 1024 * 1024
+    ),
+    publicationRetainSeconds: Number(
+      env("MEDIATOR_PUBLICATION_RETAIN_SECONDS") ?? 365 * 24 * 3600
     ),
   };
 }

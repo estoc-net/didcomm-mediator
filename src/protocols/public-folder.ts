@@ -15,6 +15,7 @@ import {
   segmentsOf,
   type DirEntry,
 } from "../public-folder/objects.js";
+import type { MediatorPolicy } from "../config.js";
 import type { MediationStore } from "../store/types.js";
 import type { HandlerContext, Reply } from "./types.js";
 import { PROBLEM_REPORT } from "./problem-report.js";
@@ -270,7 +271,7 @@ export async function publish(
   // stops being served (its closure loses protection at once).
   if (card.root === null) {
     await store.putCard(card.did, jws, null, []);
-    return { type: PUBLISHED, body: { did: card.did, card_id: card.id } };
+    return receipt(card, config);
   }
 
   const walk = await walkClosure(card.root, store, config.maxPublicationBytes);
@@ -292,10 +293,19 @@ export async function publish(
   }
 
   await store.putCard(card.did, jws, card.root, walk.closure);
-  // No retain_until: this relay never collects a live publication, which the
-  // spec spells as omitting the field. (Unreferenced objects are the only
-  // thing purged, and only after the staging grace period.)
-  return { type: PUBLISHED, body: { did: card.did, card_id: card.id } };
+  return receipt(card, config);
+}
+
+// retain_until is a lower bound: this relay never collects a live publication
+// (unreferenced objects are the only thing purged, and only after the staging
+// grace period), so the promised window is trivially honoured and republishing
+// renews it.
+function receipt(card: { did: string; id: string }, config: MediatorPolicy): Reply {
+  const retainUntil = new Date(Date.now() + config.publicationRetainSeconds * 1000);
+  return {
+    type: PUBLISHED,
+    body: { did: card.did, card_id: card.id, retain_until: retainUntil.toISOString() },
+  };
 }
 
 function toAttachment(

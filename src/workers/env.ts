@@ -26,6 +26,7 @@ export interface Env {
   MEDIATOR_MESSAGE_TTL_SECONDS?: string;
   MEDIATOR_MAX_MESSAGES_PER_ACCOUNT?: string;
   MEDIATOR_MAX_PUBLICATION_BYTES?: string;
+  MEDIATOR_PUBLICATION_RETAIN_SECONDS?: string;
 }
 
 export interface WorkerDeps {
@@ -43,6 +44,9 @@ export function policyFromEnv(env: Env): MediatorPolicy {
     maxMessagesPerAccount: Number(env.MEDIATOR_MAX_MESSAGES_PER_ACCOUNT ?? 1000),
     maxPublicationBytes: Number(
       env.MEDIATOR_MAX_PUBLICATION_BYTES ?? 16 * 1024 * 1024
+    ),
+    publicationRetainSeconds: Number(
+      env.MEDIATOR_PUBLICATION_RETAIN_SECONDS ?? 365 * 24 * 3600
     ),
   };
 }
