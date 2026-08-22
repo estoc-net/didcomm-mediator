@@ -61,7 +61,11 @@
         "MEDIATOR_DID_METHODS": "web,peer2",
         // 4 MiB publication ceiling; the code default (16 MiB) is more than
         // this deployment wants to hold per DID.
-        "MEDIATOR_MAX_PUBLICATION_BYTES": "4194304"
+        "MEDIATOR_MAX_PUBLICATION_BYTES": "4194304",
+        // This deployment's operator contact, shown on the invitation page.
+        // Deliberately not in the top-level vars: the one-click deploy must
+        // not ship someone else's abuse inbox.
+        "MEDIATOR_ABUSE_EMAIL": "abuse@merely.ca"
       },
       "durable_objects": {
         "bindings": [{ "name": "INBOX", "class_name": "InboxHub" }]

@@ -27,6 +27,8 @@ export interface Env {
   MEDIATOR_MAX_MESSAGES_PER_ACCOUNT?: string;
   MEDIATOR_MAX_PUBLICATION_BYTES?: string;
   MEDIATOR_PUBLICATION_RETAIN_SECONDS?: string;
+  /** Abuse contact for the invitation page's footer; unset = no footer. */
+  MEDIATOR_ABUSE_EMAIL?: string;
 }
 
 export interface WorkerDeps {
@@ -48,6 +50,8 @@ export function policyFromEnv(env: Env): MediatorPolicy {
     publicationRetainSeconds: Number(
       env.MEDIATOR_PUBLICATION_RETAIN_SECONDS ?? 365 * 24 * 3600
     ),
+    // `||` on purpose: an empty string means unset, same as Node's env().
+    abuseEmail: env.MEDIATOR_ABUSE_EMAIL || null,
   };
 }
 

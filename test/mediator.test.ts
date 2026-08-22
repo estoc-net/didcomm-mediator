@@ -432,6 +432,7 @@ describe("out-of-band/2.0", () => {
     const page = await res.text();
     expect(page).toContain(mediator.did);
     expect(page).toContain("_oob=");
+    expect(page).toContain("mailto:abuse@mediator.test");
   });
 
   it("keeps GET / as JSON for non-browser probes", async () => {

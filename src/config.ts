@@ -27,6 +27,11 @@ export interface MediatorPolicy {
    * renews it.
    */
   publicationRetainSeconds: number;
+  /**
+   * The operator's abuse contact, shown in the footer of the human-facing
+   * invitation page. Null means no contact line is rendered.
+   */
+  abuseEmail: string | null;
 }
 
 export interface MediatorConfig extends MediatorPolicy {
@@ -96,5 +101,6 @@ export function configFromEnv(): MediatorConfig {
     publicationRetainSeconds: Number(
       env("MEDIATOR_PUBLICATION_RETAIN_SECONDS") ?? 365 * 24 * 3600
     ),
+    abuseEmail: env("MEDIATOR_ABUSE_EMAIL") ?? null,
   };
 }

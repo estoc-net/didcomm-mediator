@@ -121,7 +121,7 @@ export function buildApp({
       return;
     }
     if (c.req.header("accept")?.includes("text/html")) {
-      return c.html(invitationPage(ctx.did, oobUrl));
+      return c.html(invitationPage(ctx.did, oobUrl, policy.abuseEmail));
     }
     return c.json(describe());
   });
@@ -180,7 +180,16 @@ export function buildApp({
 }
 
 /** What a human sees opening the invitation URL in a browser. */
-function invitationPage(did: string, oobUrl: string): string {
+function invitationPage(
+  did: string,
+  oobUrl: string,
+  abuseEmail: string | null
+): string {
+  const footer =
+    abuseEmail === null
+      ? ""
+      : `
+<footer>Report abuse to <a href="mailto:${abuseEmail}">${abuseEmail}</a>.</footer>`;
   return `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
@@ -189,6 +198,7 @@ function invitationPage(did: string, oobUrl: string): string {
 <style>
   body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }
   code { word-break: break-all; background: #eee; padding: .1rem .3rem; border-radius: .2rem; }
+  footer { margin-top: 2.5rem; font-size: .85rem; color: #777; }
 </style>
 <h1>DIDComm mediator</h1>
 <p>This is a DIDComm v2 mediator. To use it, open the invitation below with a
@@ -197,5 +207,5 @@ messages through here.</p>
 <p>Invitation URL:</p>
 <p><code>${oobUrl}</code></p>
 <p>Mediator DID:</p>
-<p><code>${did}</code></p>`;
+<p><code>${did}</code></p>${footer}`;
 }
