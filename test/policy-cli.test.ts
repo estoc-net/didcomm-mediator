@@ -4,11 +4,10 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import {
-  clearRuleSql,
   kindOf,
   parseHold,
+  renderStatement,
   runPolicy,
-  setRulesSql,
   sqlLiteral,
   UsageError,
 } from "../src/policy-cli.js";
@@ -44,32 +43,28 @@ describe("policy CLI plumbing", () => {
     expect(() => parseHold("soon", now)).toThrow(UsageError);
   });
 
-  it("generates remote SQL that mirrors the store, quotes escaped", () => {
-    const sql = setRulesSql(
-      [
-        {
-          kind: "did",
-          subject: "did:web:evil.example",
-          mode: "block",
-          holdUntil: 123,
-          note: "O'Brien's report",
-        },
-      ],
-      456
+  it("renders remote statements as literal SQL, quotes escaped", () => {
+    // The remote driver ships the store's own statements as literal SQL.
+    const sql = renderStatement({
+      sql:
+        "INSERT INTO pf_audit (at, action, kind, subject, mode, hold_until, note) " +
+        "VALUES (?, 'set', ?, ?, ?, ?, ?)",
+      params: [456, "did", "did:web:evil.example", "block", 123, "O'Brien's report"],
+    });
+    expect(sql).toBe(
+      "INSERT INTO pf_audit (at, action, kind, subject, mode, hold_until, note) " +
+        "VALUES (456, 'set', 'did', 'did:web:evil.example', 'block', 123, " +
+        "'O''Brien''s report')"
     );
-    // Upsert and audit line travel together, like setPolicyRule's transaction.
-    expect(sql).toContain("INSERT INTO pf_policy");
-    expect(sql).toContain("ON CONFLICT(kind, subject)");
-    expect(sql).toContain("INSERT INTO pf_audit");
-    expect(sql).toContain("'O''Brien''s report'");
-    expect(sql).toContain("VALUES (456, 'set',");
-
-    const clear = clearRuleSql("cid", "bafyfake", 789);
-    expect(clear).toContain("DELETE FROM pf_policy");
-    expect(clear).toContain("'clear'");
 
     expect(sqlLiteral(null)).toBe("NULL");
     expect(sqlLiteral(7)).toBe("7");
+    // A placeholder/parameter mismatch is a bug, never silently misrendered.
+    expect(() => renderStatement({ sql: "VALUES (?, ?)", params: [1] })).toThrow();
+    // Blobs never travel over wrangler.
+    expect(() =>
+      renderStatement({ sql: "VALUES (?)", params: [new Uint8Array([1])] })
+    ).toThrow();
   });
 
   it("refuses to mint a database at a typo'd --db path", async () => {

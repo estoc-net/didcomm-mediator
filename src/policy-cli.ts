@@ -1,12 +1,16 @@
 /**
  * Operator policy CLI — the admin face of the compliance core.
  *
- * One CLI, two backends, because both deployment targets host content:
- * `--db <path>` opens the Node/Docker target's SQLite file directly and
- * reuses the store (so every change writes its audit line in the same
- * transaction), `--remote` wraps `wrangler d1 execute` for the Workers
- * target (no interactive transactions there — the upsert and its audit
- * line travel in one batch instead).
+ * One CLI, one store, two drivers, because both deployment targets host
+ * content: `--db <path>` opens the Node/Docker target's SQLite file
+ * directly, `--remote` reaches the Workers target's D1 through a driver
+ * that renders each statement as literal SQL and ships the batch over
+ * `wrangler d1 execute --command` (a multi-statement command runs as one
+ * batch, D1's only transaction shape, and returns per-statement rows —
+ * `--file` would not: it takes D1's import path, which returns only summary
+ * statistics). Either way the commands run the same SqlStore code the
+ * mediator itself runs, so every change writes its audit line in the same
+ * transaction.
  *
  * The serve default is deliberately not here: it's deployment
  * configuration (`MEDIATOR_PUBLICATION_SERVE_DEFAULT`), not a rule.
@@ -17,13 +21,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import { isCid } from "./public-folder/objects.js";
+import { SqlStore } from "./store/sql-store.js";
+import type { SqlDriver, SqlResult, SqlStatement, SqlValue } from "./store/sql-store.js";
 import { SqliteStore } from "./store/sqlite.js";
-import type {
-  PolicyAuditEntry,
-  PolicyKind,
-  PolicyMode,
-  PolicyRule,
-} from "./store/types.js";
+import type { PolicyAuditEntry, PolicyKind, PolicyRule } from "./store/types.js";
 
 /** A user mistake, reported with the usage text; everything else is a bug. */
 export class UsageError extends Error {}
@@ -50,19 +51,6 @@ purge unreferenced until then. --remote wraps \`wrangler d1 execute\` against
 the database named in wrangler.jsonc (override with --database / --env).`;
 }
 
-/*
- * What a backend must do — the five store calls the commands compose.
- * `set` takes a batch so quarantine's many rules go out in one round trip.
- */
-export interface PolicyBackend {
-  list(): Promise<PolicyRule[]>;
-  audit(limit: number): Promise<PolicyAuditEntry[]>;
-  set(rules: Omit<PolicyRule, "createdAt">[]): Promise<void>;
-  clear(kind: PolicyKind, subject: string): Promise<boolean>;
-  closure(ownerDid: string): Promise<string[]>;
-  close(): void;
-}
-
 export function kindOf(subject: string): PolicyKind {
   if (subject.startsWith("did:")) {
     return "did";
@@ -87,94 +75,31 @@ export function parseHold(value: string, now: number): number {
   throw new UsageError(`--hold takes a duration (365d, 12h) or a date, not "${value}"`);
 }
 
-/* ---------------------------------------------------------------- SQLite */
-
-class SqliteBackend implements PolicyBackend {
-  private store: SqliteStore;
-
-  constructor(path: string) {
-    if (!existsSync(path)) {
-      // better-sqlite3 would happily mint an empty database at a typo'd
-      // path and every command would "work" against nothing.
-      throw new UsageError(`No database at ${path}`);
-    }
-    this.store = new SqliteStore(path);
-  }
-
-  list() {
-    return this.store.listPolicyRules();
-  }
-
-  audit(limit: number) {
-    return this.store.policyAudit(limit);
-  }
-
-  async set(rules: Omit<PolicyRule, "createdAt">[]) {
-    for (const rule of rules) {
-      await this.store.setPolicyRule(rule);
-    }
-  }
-
-  clear(kind: PolicyKind, subject: string) {
-    return this.store.clearPolicyRule(kind, subject);
-  }
-
-  closure(ownerDid: string) {
-    return this.store.closureOf(ownerDid);
-  }
-
-  close() {
-    this.store.close();
-  }
-}
-
 /* ---------------------------------------------------------------- remote */
 
-/** SQL string/number literal — D1 over wrangler has no bound parameters. */
-export function sqlLiteral(value: string | number | null): string {
+/** SQL literal — D1 over wrangler has no bound parameters. */
+export function sqlLiteral(value: SqlValue): string {
   if (value === null) {
     return "NULL";
   }
   if (typeof value === "number") {
     return String(value);
   }
-  return `'${value.replace(/'/g, "''")}'`;
+  if (typeof value === "string") {
+    return `'${value.replace(/'/g, "''")}'`;
+  }
+  throw new Error("Blob parameters do not travel over wrangler");
 }
 
-/** The upsert + audit pair for each rule, mirroring setPolicyRule. */
-export function setRulesSql(
-  rules: Omit<PolicyRule, "createdAt">[],
-  now: number
-): string {
-  return rules
-    .flatMap((rule) => {
-      const values = [
-        sqlLiteral(rule.kind),
-        sqlLiteral(rule.subject),
-        sqlLiteral(rule.mode),
-        sqlLiteral(rule.holdUntil),
-        sqlLiteral(rule.note),
-      ].join(", ");
-      return [
-        "INSERT INTO pf_policy (kind, subject, mode, hold_until, note, created_at) " +
-          `VALUES (${values}, ${now}) ` +
-          "ON CONFLICT(kind, subject) DO UPDATE SET mode = excluded.mode, " +
-          "hold_until = excluded.hold_until, note = excluded.note;",
-        "INSERT INTO pf_audit (at, action, kind, subject, mode, hold_until, note) " +
-          `VALUES (${now}, 'set', ${values});`,
-      ];
-    })
-    .join("\n");
-}
-
-/** The delete + audit pair, mirroring clearPolicyRule after an exists check. */
-export function clearRuleSql(kind: PolicyKind, subject: string, now: number): string {
-  const where = `kind = ${sqlLiteral(kind)} AND subject = ${sqlLiteral(subject)}`;
-  return (
-    `DELETE FROM pf_policy WHERE ${where};\n` +
-    "INSERT INTO pf_audit (at, action, kind, subject) " +
-    `VALUES (${now}, 'clear', ${sqlLiteral(kind)}, ${sqlLiteral(subject)});`
-  );
+/** Interpolates a statement's parameters as escaped literals. */
+export function renderStatement({ sql, params = [] }: SqlStatement): string {
+  const parts = sql.split("?");
+  if (parts.length !== params.length + 1) {
+    throw new Error(`Parameter count mismatch in: ${sql}`);
+  }
+  return parts
+    .slice(1)
+    .reduce((acc, part, i) => acc + sqlLiteral(params[i]) + part, parts[0]);
 }
 
 export interface RemoteTarget {
@@ -182,25 +107,18 @@ export interface RemoteTarget {
   env: string | null;
 }
 
-interface RuleRow {
-  kind: string;
-  subject: string;
-  mode: string;
-  hold_until: number | null;
-  note: string | null;
-  created_at: number;
-}
-
-class RemoteBackend implements PolicyBackend {
+/**
+ * The Workers target's driver: one `wrangler d1 execute` round trip per
+ * batch. Wrangler's JSON reports rows per statement but no changes count,
+ * so `changes` is always 0 — the policy paths never read it.
+ */
+class WranglerDriver implements SqlDriver {
   constructor(private target: RemoteTarget) {}
 
-  /**
-   * One `wrangler d1 execute` round trip. The SQL rides `--command` — a
-   * multi-statement command runs as one batch, D1's only transaction
-   * shape, and returns per-statement result rows. (`--file` would not:
-   * it takes D1's import path, which returns only summary statistics.)
-   */
-  private run(sql: string): Record<string, unknown>[] {
+  async batch(statements: SqlStatement[]): Promise<SqlResult[]> {
+    const sql = statements
+      .map((statement) => `${renderStatement(statement)};`)
+      .join("\n");
     const args = [
       "wrangler",
       "d1",
@@ -231,64 +149,10 @@ class RemoteBackend implements PolicyBackend {
     const batches = JSON.parse(proc.stdout.slice(start, end + 1)) as {
       results?: Record<string, unknown>[];
     }[];
-    return batches.flatMap((batch) => batch.results ?? []);
-  }
-
-  async list(): Promise<PolicyRule[]> {
-    const rows = this.run(
-      "SELECT kind, subject, mode, hold_until, note, created_at FROM pf_policy " +
-        "ORDER BY created_at, kind, subject;"
-    ) as unknown as RuleRow[];
-    return rows.map((row) => ({
-      kind: row.kind as PolicyKind,
-      subject: row.subject,
-      mode: row.mode as PolicyMode,
-      holdUntil: row.hold_until,
-      note: row.note,
-      createdAt: row.created_at,
+    return statements.map((_, i) => ({
+      rows: batches[i]?.results ?? [],
+      changes: 0,
     }));
-  }
-
-  async audit(limit: number): Promise<PolicyAuditEntry[]> {
-    const rows = this.run(
-      "SELECT at, action, kind, subject, mode, hold_until, note FROM pf_audit " +
-        `ORDER BY id DESC LIMIT ${Math.trunc(limit)};`
-    ) as unknown as (RuleRow & { at: number; action: string })[];
-    return rows.map((row) => ({
-      at: row.at,
-      action: row.action as PolicyAuditEntry["action"],
-      kind: row.kind as PolicyKind,
-      subject: row.subject,
-      mode: row.mode as PolicyMode | null,
-      holdUntil: row.hold_until,
-      note: row.note,
-    }));
-  }
-
-  async set(rules: Omit<PolicyRule, "createdAt">[]): Promise<void> {
-    // Chunked so a huge quarantine closure never rides one giant batch.
-    for (let i = 0; i < rules.length; i += 40) {
-      this.run(setRulesSql(rules.slice(i, i + 40), Date.now()));
-    }
-  }
-
-  async clear(kind: PolicyKind, subject: string): Promise<boolean> {
-    const exists = this.run(
-      `SELECT 1 AS present FROM pf_policy WHERE kind = ${sqlLiteral(kind)} ` +
-        `AND subject = ${sqlLiteral(subject)};`
-    );
-    if (exists.length === 0) {
-      return false;
-    }
-    this.run(clearRuleSql(kind, subject, Date.now()));
-    return true;
-  }
-
-  async closure(ownerDid: string): Promise<string[]> {
-    const rows = this.run(
-      `SELECT cid FROM pf_refs WHERE owner_did = ${sqlLiteral(ownerDid)};`
-    ) as unknown as { cid: string }[];
-    return rows.map((row) => row.cid);
   }
 
   close(): void {}
@@ -369,13 +233,18 @@ function configuredDatabase(): string | null {
   }
 }
 
-function backendFor(parsed: Parsed): PolicyBackend {
+function storeFor(parsed: Parsed): SqlStore {
   const db = parsed.flags.get("db");
   if (db !== undefined && parsed.remote) {
     throw new UsageError("--db and --remote are two different mediators; pick one");
   }
   if (db !== undefined) {
-    return new SqliteBackend(db);
+    if (!existsSync(db)) {
+      // better-sqlite3 would happily mint an empty database at a typo'd
+      // path and every command would "work" against nothing.
+      throw new UsageError(`No database at ${db}`);
+    }
+    return new SqliteStore(db);
   }
   if (parsed.remote) {
     const database = parsed.flags.get("database") ?? configuredDatabase();
@@ -384,10 +253,12 @@ function backendFor(parsed: Parsed): PolicyBackend {
         "--remote found no wrangler.jsonc here; name the database with --database"
       );
     }
-    return new RemoteBackend({
+    const driver = new WranglerDriver({
       database,
       env: parsed.flags.get("env") ?? null,
     });
+    // The live worker owns the schema; the CLI only visits.
+    return new SqlStore(driver, { ensureSchema: false });
   }
   throw new UsageError("Pick a backend: --db <path> or --remote");
 }
@@ -405,14 +276,14 @@ export async function runPolicy(
   print: (line: string) => void
 ): Promise<number> {
   let parsed: Parsed;
-  let backend: PolicyBackend;
+  let store: SqlStore;
   try {
     parsed = parseArgs(argv);
     if (parsed.positionals.length === 0) {
       print(usage());
       return 1;
     }
-    backend = backendFor(parsed);
+    store = storeFor(parsed);
   } catch (error) {
     if (error instanceof UsageError) {
       print(error.message);
@@ -430,7 +301,7 @@ export async function runPolicy(
 
     switch (verb) {
       case "list": {
-        const rules = await backend.list();
+        const rules = await store.listPolicyRules();
         if (rules.length === 0) {
           print("No rules.");
         }
@@ -444,7 +315,7 @@ export async function runPolicy(
         if (!Number.isInteger(limit) || limit <= 0) {
           throw new UsageError("--limit takes a positive integer");
         }
-        const entries = await backend.audit(limit);
+        const entries = await store.policyAudit(limit);
         if (entries.length === 0) {
           print("No audit entries.");
         }
@@ -459,14 +330,14 @@ export async function runPolicy(
         const { kind, subject } = subjectOf(parsed);
         const holdUntil =
           holdFlag === undefined ? null : parseHold(holdFlag, Date.now());
-        await backend.set([{ kind, subject, mode: verb, holdUntil, note }]);
+        await store.setPolicyRules([{ kind, subject, mode: verb, holdUntil, note }]);
         const hold = holdUntil === null ? "" : `, held until ${iso(holdUntil)}`;
         print(`${verb} ${subject}${hold}`);
         return 0;
       }
       case "clear": {
         const { kind, subject } = subjectOf(parsed);
-        if (await backend.clear(kind, subject)) {
+        if (await store.clearPolicyRule(kind, subject)) {
           print(`Cleared ${subject}`);
           return 0;
         }
@@ -479,9 +350,9 @@ export async function runPolicy(
           throw new UsageError("quarantine takes a DID; to hold one object, block the CID with --hold");
         }
         const holdUntil = parseHold(holdFlag ?? "365d", Date.now());
-        const closure = await backend.closure(subject);
+        const closure = await store.closureOf(subject);
         const stamp = note ?? `quarantine ${subject}`;
-        await backend.set([
+        await store.setPolicyRules([
           // The DID rule blocks; holds only mean something on cid rules
           // (they pin objects through the purge), so they go there.
           { kind: "did", subject, mode: "block", holdUntil: null, note: stamp },
@@ -509,7 +380,7 @@ export async function runPolicy(
     }
     throw error;
   } finally {
-    backend.close();
+    store.close();
   }
 }
 
