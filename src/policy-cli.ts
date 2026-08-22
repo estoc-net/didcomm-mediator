@@ -13,9 +13,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import { isCid } from "./public-folder/objects.js";
@@ -197,49 +195,43 @@ class RemoteBackend implements PolicyBackend {
   constructor(private target: RemoteTarget) {}
 
   /**
-   * One `wrangler d1 execute` round trip. The SQL travels as a file — long
-   * quarantine batches would burst the argument list — and wrangler sends a
-   * multi-statement file as one batch, D1's only transaction shape.
+   * One `wrangler d1 execute` round trip. The SQL rides `--command` — a
+   * multi-statement command runs as one batch, D1's only transaction
+   * shape, and returns per-statement result rows. (`--file` would not:
+   * it takes D1's import path, which returns only summary statistics.)
    */
   private run(sql: string): Record<string, unknown>[] {
-    const dir = mkdtempSync(join(tmpdir(), "mediator-policy-"));
-    const file = join(dir, "policy.sql");
-    try {
-      writeFileSync(file, sql);
-      const args = [
-        "wrangler",
-        "d1",
-        "execute",
-        this.target.database,
-        "--remote",
-        "--json",
-        "--file",
-        file,
-      ];
-      if (this.target.env !== null) {
-        args.push("--env", this.target.env);
-      }
-      const proc = spawnSync("npx", args, { encoding: "utf8" });
-      if (proc.error) {
-        throw proc.error;
-      }
-      if (proc.status !== 0) {
-        throw new Error(
-          `wrangler exited ${proc.status}:\n${proc.stderr || proc.stdout}`
-        );
-      }
-      const start = proc.stdout.indexOf("[");
-      const end = proc.stdout.lastIndexOf("]");
-      if (start < 0 || end < start) {
-        throw new Error(`wrangler returned no JSON:\n${proc.stdout}`);
-      }
-      const batches = JSON.parse(proc.stdout.slice(start, end + 1)) as {
-        results?: Record<string, unknown>[];
-      }[];
-      return batches.flatMap((batch) => batch.results ?? []);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
+    const args = [
+      "wrangler",
+      "d1",
+      "execute",
+      this.target.database,
+      "--remote",
+      "--json",
+      "--command",
+      sql,
+    ];
+    if (this.target.env !== null) {
+      args.push("--env", this.target.env);
     }
+    const proc = spawnSync("npx", args, { encoding: "utf8" });
+    if (proc.error) {
+      throw proc.error;
+    }
+    if (proc.status !== 0) {
+      throw new Error(
+        `wrangler exited ${proc.status}:\n${proc.stderr || proc.stdout}`
+      );
+    }
+    const start = proc.stdout.indexOf("[");
+    const end = proc.stdout.lastIndexOf("]");
+    if (start < 0 || end < start) {
+      throw new Error(`wrangler returned no JSON:\n${proc.stdout}`);
+    }
+    const batches = JSON.parse(proc.stdout.slice(start, end + 1)) as {
+      results?: Record<string, unknown>[];
+    }[];
+    return batches.flatMap((batch) => batch.results ?? []);
   }
 
   async list(): Promise<PolicyRule[]> {
