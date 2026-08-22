@@ -517,6 +517,13 @@ export class SqliteStore implements MediationStore {
     return rows.map((row) => row.owner_did);
   }
 
+  async closureOf(ownerDid: string): Promise<string[]> {
+    const rows = this.db
+      .prepare("SELECT cid FROM pf_refs WHERE owner_did = ?")
+      .all(ownerDid) as { cid: string }[];
+    return rows.map((row) => row.cid);
+  }
+
   close(): void {
     this.db.close();
   }

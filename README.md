@@ -171,13 +171,33 @@ universal core (public-folder spec §7): per-DID / per-CID rules in the
 `pf_policy` table — `block` answers exactly as absence (no tipping off),
 `legal` may say so over HTTP (451), `allow` lists a DID into a `deny`
 default — plus an evidence hold (`hold_until` pins an object through the
-purge) and an append-only `pf_audit` trail of every rule change. Rules are
-managed directly in the database for now (`wrangler d1 execute` /
-`sqlite3`) via the store's `setPolicyRule`/`clearPolicyRule`; a small
-operator CLI is planned. Blocking is enforced at publish time (refused,
-never stored) and at serve time (DIDComm query and HTTP reads alike — the
-browse-domain gateway forwards these reads, so it needs nothing of its
-own).
+purge) and an append-only `pf_audit` trail of every rule change. Blocking
+is enforced at publish time (refused, never stored) and at serve time
+(DIDComm query and HTTP reads alike — the browse-domain gateway forwards
+these reads, so it needs nothing of its own).
+
+Rules are managed with the operator CLI, which speaks to either target:
+
+```sh
+# Docker / Node: point at the SQLite file on the data volume
+npm run policy -- --db ./data/mediator.db list
+
+# Cloudflare Workers: wraps `wrangler d1 execute` (database name read
+# from wrangler.jsonc; --database / --env override)
+npm run policy -- --remote audit --limit 20
+
+npm run policy -- --db ./data/mediator.db block did:web:evil.example --note "ticket 7"
+npm run policy -- --db ./data/mediator.db quarantine did:web:reported.example
+```
+
+`block`, `legal`, and `allow` take a DID or a CID (the kind is inferred),
+an optional `--hold 365d` and `--note`; `clear` removes a rule, and every
+change — CLI or not — lands on the audit trail. `quarantine` is the
+takedown-request verb: it blocks the DID and puts a hold (default 365
+days) on every object in its current publication closure, so the content
+disappears from the public face while the evidence outlives the purge.
+The serve default is not a CLI concern — it's deployment configuration
+(`MEDIATOR_PUBLICATION_SERVE_DEFAULT` above).
 
 ## Development
 

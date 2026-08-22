@@ -712,6 +712,15 @@ export class D1Store implements MediationStore {
     return results.map((row) => row.owner_did);
   }
 
+  async closureOf(ownerDid: string): Promise<string[]> {
+    await this.init();
+    const { results } = await this.db
+      .prepare("SELECT cid FROM pf_refs WHERE owner_did = ?")
+      .bind(ownerDid)
+      .all<{ cid: string }>();
+    return results.map((row) => row.cid);
+  }
+
   close(): void {
     // D1 has no connection to close.
   }

@@ -171,6 +171,8 @@ export interface MediationStore {
   policyAudit(limit: number): Promise<PolicyAuditEntry[]>;
   /** Owners whose current publication closure references this CID. */
   referencingOwners(cid: string): Promise<string[]>;
+  /** Every CID the owner's current publication closure references. */
+  closureOf(ownerDid: string): Promise<string[]>;
 
   close(): void;
 }

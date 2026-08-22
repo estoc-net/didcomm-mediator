@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.workers.json",
     "docker:build": "docker build -t ghcr.io/estoc-net/didcomm-mediator .",
     "dev:workers": "wrangler dev",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "policy": "tsx src/policy-cli.ts"
   },
   "author": "merely",
   "license": "Apache-2.0",
