@@ -80,6 +80,69 @@ describe("SqliteStore", () => {
     store.close();
   });
 
+  it("keeps every policy change on the audit trail", async () => {
+    const store = new SqliteStore(":memory:");
+    await store.setPolicyRule({
+      kind: "did",
+      subject: "did:example:bad",
+      mode: "block",
+      holdUntil: null,
+      note: "report #1",
+    });
+    await store.setPolicyRule({
+      kind: "cid",
+      subject: "cid-evidence",
+      mode: "block",
+      holdUntil: Date.now() + 3600 * 1000,
+      note: null,
+    });
+
+    const rules = await store.policyRules("did", ["did:example:bad"]);
+    expect(rules.get("did:example:bad")?.mode).toBe("block");
+    expect(rules.get("did:example:bad")?.note).toBe("report #1");
+    expect((await store.listPolicyRules()).length).toBe(2);
+
+    expect(await store.clearPolicyRule("did", "did:example:bad")).toBe(true);
+    expect(await store.clearPolicyRule("did", "did:example:bad")).toBe(false);
+    expect((await store.policyRules("did", ["did:example:bad"])).size).toBe(0);
+
+    // Most recent first; the no-op clear left no line.
+    const audit = await store.policyAudit(10);
+    expect(audit.map((entry) => entry.action)).toEqual(["clear", "set", "set"]);
+    expect(audit[0].subject).toBe("did:example:bad");
+    expect(audit[1].holdUntil).not.toBeNull();
+    store.close();
+  });
+
+  it("a policy hold pins an orphaned object through the purge", async () => {
+    const store = new SqliteStore(":memory:", { stagedObjectTtlSeconds: -1 });
+    const bytes = new TextEncoder().encode("evidence");
+    await store.putObject("cid-held", bytes);
+    await store.setPolicyRule({
+      kind: "cid",
+      subject: "cid-held",
+      mode: "block",
+      holdUntil: Date.now() + 3600 * 1000,
+      note: null,
+    });
+
+    // Unreferenced and past the grace period — only the hold keeps it.
+    expect(await store.purgeExpired()).toBe(0);
+    expect(await store.getObject("cid-held")).not.toBeNull();
+
+    // Hold lapsed (rule may stay): the object is reclaimable again.
+    await store.setPolicyRule({
+      kind: "cid",
+      subject: "cid-held",
+      mode: "block",
+      holdUntil: Date.now() - 1,
+      note: null,
+    });
+    expect(await store.purgeExpired()).toBe(1);
+    expect(await store.getObject("cid-held")).toBeNull();
+    store.close();
+  });
+
   it("migrates a legacy pf_objects table, keeping stored objects", async () => {
     const path = join(tmpdir(), `mediator-migration-${randomUUID()}.db`);
     // The first public-folder version: bytes NOT NULL, no store column.

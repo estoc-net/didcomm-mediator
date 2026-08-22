@@ -16,6 +16,7 @@ import {
   type DirEntry,
 } from "../public-folder/objects.js";
 import type { MediatorPolicy } from "../config.js";
+import { cidDecision, didDecision, publishBarred } from "../public-folder/policy.js";
 import type { MediationStore } from "../store/types.js";
 import type { HandlerContext, Reply } from "./types.js";
 import { PROBLEM_REPORT } from "./problem-report.js";
@@ -239,17 +240,35 @@ export async function publish(
       "The card's did is neither your account nor a recipient DID bound to it"
     );
   }
+  // Operator policy, checked before any attachment bytes can land: a barred
+  // DID's content is refused, never stored. The comment is deliberately
+  // generic — a refusal explains nothing (spec §7, no tipping off).
+  if (await publishBarred(store, [...new Set([sender, card.did])])) {
+    return problem(
+      "e.p.publish.refused",
+      "This relay does not accept this publication"
+    );
+  }
 
   // Objects ride along as attachments, id = CID. Anything whose bytes do not
   // hash to the id it claims is discarded, per spec — quietly, since a valid
-  // publish round never depends on it.
+  // publish round never depends on it. A CID the operator barred is skipped
+  // the same silent way: refused bytes never enter the store's possession.
   const attachments = Array.isArray(incoming.message.attachments)
     ? incoming.message.attachments
     : [];
+  const barredCids = await store.policyRules(
+    "cid",
+    attachments.map((a) => (a as { id?: unknown }).id).filter(isCid)
+  );
   for (const attachment of attachments) {
     const id = (attachment as { id?: unknown }).id;
     const base64 = (attachment as { data?: { base64?: unknown } }).data?.base64;
     if (!isCid(id) || typeof base64 !== "string") {
+      continue;
+    }
+    const rule = barredCids.get(id);
+    if (rule !== undefined && rule.mode !== "allow") {
       continue;
     }
     let bytes: Uint8Array;
@@ -328,11 +347,17 @@ export async function query(
   incoming: Unpacked,
   context: HandlerContext
 ): Promise<Reply | null> {
-  const { store, publicUrl } = context;
+  const { store, config, publicUrl } = context;
   const body = incoming.message.body;
   const did = body.did;
   if (typeof did !== "string") {
     return problem("e.p.msg", "query requires body.did");
+  }
+
+  // Operator policy first, answering exactly as if no card were held — a DID
+  // the relay will not serve is indistinguishable from one it never heard of.
+  if ((await didDecision(store, config, [did])) !== "ok") {
+    return problem("e.p.did.unknown", `This relay holds no card for ${did}`);
   }
 
   const stored = await store.getCard(did);
@@ -378,6 +403,21 @@ export async function query(
         entries = decodeDirNode(bytes);
       }
     }
+  }
+
+  // A barred object in the proof chain answers as a storage hole — the same
+  // response its genuine absence produces. The queried DID already passed
+  // the policy check, so its own tree needs no reference walk (ownerCleared).
+  const chainPolicy = await cidDecision(
+    store,
+    config,
+    chain.map((link) => link.cid),
+    { ownerCleared: true }
+  );
+  if (chainPolicy.decision !== "ok") {
+    return chainPolicy.cid === stored.root
+      ? problem("e.p.me.res.storage", "The published root is not on hand")
+      : problem("e.p.me.res.storage", `Object ${chainPolicy.cid} is not on hand`);
   }
 
   return {

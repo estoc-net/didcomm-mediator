@@ -465,6 +465,172 @@ describe("public-folder HTTP reads", () => {
   });
 });
 
+describe("operator serve policy", () => {
+  const MEDIATE_REQUEST =
+    "https://didcomm.org/coordinate-mediation/3.0/mediate-request";
+  let store: ReturnType<typeof memoryStore>;
+  let policed: Hono;
+  let deny: Hono;
+
+  const allObjects = () =>
+    [...tree.objects].map(([cid, bytes]) => objectAttachment(cid, bytes));
+
+  beforeAll(async () => {
+    store = memoryStore();
+    policed = buildServer({ identity: mediator, store, config: TEST_CONFIG }).app;
+    // Same store, inverted default: what an allowlist-only deployment serves.
+    deny = buildServer({
+      identity: mediator,
+      store,
+      config: { ...TEST_CONFIG, publicationServeDefault: "deny" },
+    }).app;
+    await send(owner, MEDIATE_REQUEST, {}, undefined, policed);
+    const jws = await signCard(owner, freshCard(tree.root));
+    const done = await publishRound(owner, jws, allObjects(), policed);
+    expect(done?.type).toBe(PUBLISHED);
+  });
+
+  it("a blocked DID answers exactly as an unknown one", async () => {
+    await store.setPolicyRule({
+      kind: "did",
+      subject: owner.did,
+      mode: "block",
+      holdUntil: null,
+      note: null,
+    });
+
+    const reply = await send(reader, QUERY, { did: owner.did }, undefined, policed);
+    expect(reply?.type).toBe(PROBLEM);
+    expect(reply?.body.code).toBe("e.p.did.unknown");
+    expect(
+      (await policed.request(`/card/${encodeURIComponent(owner.did)}`)).status
+    ).toBe(404);
+
+    // A further publish is refused — with no reason — before bytes can land.
+    const jws = await signCard(owner, freshCard(tree.root));
+    const refused = await publishRound(owner, jws, undefined, policed);
+    expect(refused?.type).toBe(PROBLEM);
+    expect(refused?.body.code).toBe("e.p.publish.refused");
+
+    await store.clearPolicyRule("did", owner.did);
+    expect(
+      (await policed.request(`/card/${encodeURIComponent(owner.did)}`)).status
+    ).toBe(200);
+  });
+
+  it("legal mode may say so on HTTP; DIDComm stays silent", async () => {
+    await store.setPolicyRule({
+      kind: "did",
+      subject: owner.did,
+      mode: "legal",
+      holdUntil: null,
+      note: "court order #42",
+    });
+
+    expect(
+      (await policed.request(`/card/${encodeURIComponent(owner.did)}`)).status
+    ).toBe(451);
+    const reply = await send(reader, QUERY, { did: owner.did }, undefined, policed);
+    expect(reply?.body.code).toBe("e.p.did.unknown");
+
+    await store.clearPolicyRule("did", owner.did);
+  });
+
+  it("a blocked CID reads as absent wherever it appears", async () => {
+    const cid = await fileCid(new TextEncoder().encode("# hello world"));
+    await store.setPolicyRule({
+      kind: "cid",
+      subject: cid,
+      mode: "block",
+      holdUntil: null,
+      note: null,
+    });
+
+    expect((await policed.request(`/objects/${cid}`)).status).toBe(404);
+    // In a proof chain it is a storage hole — same answer its absence gives.
+    const hole = await send(
+      reader,
+      QUERY,
+      { did: owner.did, path: "posts/hello.md" },
+      undefined,
+      policed
+    );
+    expect(hole?.type).toBe(PROBLEM);
+    expect(hole?.body.code).toBe("e.p.me.res.storage");
+    // The rest of the folder is untouched.
+    const fine = await send(
+      reader,
+      QUERY,
+      { did: owner.did, path: "profile.json" },
+      undefined,
+      policed
+    );
+    expect(fine?.type).toBe(ANSWER);
+
+    await store.clearPolicyRule("cid", cid);
+  });
+
+  it("a barred CID's bytes are refused, never stored", async () => {
+    const fresh = memoryStore();
+    const target = buildServer({
+      identity: mediator,
+      store: fresh,
+      config: TEST_CONFIG,
+    }).app;
+    await send(owner, MEDIATE_REQUEST, {}, undefined, target);
+    const cid = await fileCid(new TextEncoder().encode("# hello world"));
+    await fresh.setPolicyRule({
+      kind: "cid",
+      subject: cid,
+      mode: "block",
+      holdUntil: null,
+      note: null,
+    });
+
+    // The publish offers every object; the barred one is skipped, so the
+    // closure never completes and the bytes are never in possession.
+    const jws = await signCard(owner, freshCard(tree.root));
+    const reply = await publishRound(owner, jws, allObjects(), target);
+    expect(reply?.type).toBe(PUBLISH_RESULT);
+    expect(reply?.body.missing).toContain(cid);
+    expect(await fresh.getObject(cid)).toBeNull();
+    fresh.close();
+  });
+
+  it("a deny default serves nothing but allowlisted DIDs", async () => {
+    expect(
+      (await deny.request(`/card/${encodeURIComponent(owner.did)}`)).status
+    ).toBe(404);
+    expect((await deny.request(`/objects/${tree.root}`)).status).toBe(404);
+    const hidden = await send(reader, QUERY, { did: owner.did }, undefined, deny);
+    expect(hidden?.type).toBe(PROBLEM);
+    expect(hidden?.body.code).toBe("e.p.did.unknown");
+
+    await store.setPolicyRule({
+      kind: "did",
+      subject: owner.did,
+      mode: "allow",
+      holdUntil: null,
+      note: null,
+    });
+    expect(
+      (await deny.request(`/card/${encodeURIComponent(owner.did)}`)).status
+    ).toBe(200);
+    // Objects are servable through the allowlisted owner's references.
+    expect((await deny.request(`/objects/${tree.root}`)).status).toBe(200);
+    const served = await send(
+      reader,
+      QUERY,
+      { did: owner.did, path: "profile.json" },
+      undefined,
+      deny
+    );
+    expect(served?.type).toBe(ANSWER);
+
+    await store.clearPolicyRule("did", owner.did);
+  });
+});
+
 /** The owner's raw Ed25519 public key, as a reader's resolver would yield it. */
 function ownerPublicKey(): Uint8Array {
   const secret = owner.identity.secrets.find(

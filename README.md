@@ -159,6 +159,25 @@ the account.
 | `MEDIATOR_MESSAGE_TTL_SECONDS` | 7 days | Unclaimed messages expire |
 | `MEDIATOR_MAX_MESSAGES_PER_ACCOUNT` | `1000` | Inbox quota |
 | `MEDIATOR_MAX_PUBLICATION_BYTES` | 16 MiB | public-folder: size ceiling per publication (total file bytes under one root) |
+| `MEDIATOR_PUBLICATION_RETAIN_SECONDS` | 1 year | public-folder: storage lease promised in every `published` receipt (`retain_until` = now + this) |
+| `MEDIATOR_PUBLICATION_SERVE_DEFAULT` | `allow` | public-folder: `allow` serves every published folder minus the operator blocklist; `deny` serves only allowlisted DIDs (a personal relay's closed-by-default) |
+| `MEDIATOR_ABUSE_EMAIL` | unset | Abuse contact shown in the invitation page's footer |
+
+### Operator policy
+
+Storing other people's public folders makes the operator a content host,
+with the removal and preservation duties that follow. The relay ships the
+universal core (public-folder spec §7): per-DID / per-CID rules in the
+`pf_policy` table — `block` answers exactly as absence (no tipping off),
+`legal` may say so over HTTP (451), `allow` lists a DID into a `deny`
+default — plus an evidence hold (`hold_until` pins an object through the
+purge) and an append-only `pf_audit` trail of every rule change. Rules are
+managed directly in the database for now (`wrangler d1 execute` /
+`sqlite3`) via the store's `setPolicyRule`/`clearPolicyRule`; a small
+operator CLI is planned. Blocking is enforced at publish time (refused,
+never stored) and at serve time (DIDComm query and HTTP reads alike — the
+browse-domain gateway forwards these reads, so it needs nothing of its
+own).
 
 ## Development
 

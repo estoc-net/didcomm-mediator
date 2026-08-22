@@ -1,6 +1,10 @@
 import type { Secret } from "@estoc/did-peer";
 
-import { parseDidMethods, type MediatorPolicy } from "../config.js";
+import {
+  parseDidMethods,
+  parseServeDefault,
+  type MediatorPolicy,
+} from "../config.js";
 import { DIDCommContext } from "../didcomm/didcomm.js";
 import {
   identityFor,
@@ -29,6 +33,8 @@ export interface Env {
   MEDIATOR_PUBLICATION_RETAIN_SECONDS?: string;
   /** Abuse contact for the invitation page's footer; unset = no footer. */
   MEDIATOR_ABUSE_EMAIL?: string;
+  /** public-folder serve default: "allow" (default) or "deny". */
+  MEDIATOR_PUBLICATION_SERVE_DEFAULT?: string;
 }
 
 export interface WorkerDeps {
@@ -52,6 +58,9 @@ export function policyFromEnv(env: Env): MediatorPolicy {
     ),
     // `||` on purpose: an empty string means unset, same as Node's env().
     abuseEmail: env.MEDIATOR_ABUSE_EMAIL || null,
+    publicationServeDefault: parseServeDefault(
+      env.MEDIATOR_PUBLICATION_SERVE_DEFAULT || undefined
+    ),
   };
 }
 

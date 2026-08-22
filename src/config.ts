@@ -32,6 +32,14 @@ export interface MediatorPolicy {
    * invitation page. Null means no contact line is rendered.
    */
   abuseEmail: string | null;
+  /**
+   * public-folder: whether folders are served unless refused ("allow" — a
+   * public relay with a blocklist) or refused unless listed ("deny" — a
+   * personal relay serving only allowlisted DIDs). Same policy table either
+   * way; only the default inverts. Publishing is unaffected — mediation
+   * gates that.
+   */
+  publicationServeDefault: "allow" | "deny";
 }
 
 export interface MediatorConfig extends MediatorPolicy {
@@ -102,5 +110,22 @@ export function configFromEnv(): MediatorConfig {
       env("MEDIATOR_PUBLICATION_RETAIN_SECONDS") ?? 365 * 24 * 3600
     ),
     abuseEmail: env("MEDIATOR_ABUSE_EMAIL") ?? null,
+    publicationServeDefault: parseServeDefault(
+      env("MEDIATOR_PUBLICATION_SERVE_DEFAULT")
+    ),
   };
+}
+
+export function parseServeDefault(
+  value: string | undefined
+): "allow" | "deny" {
+  if (value === undefined || value === "allow") {
+    return "allow";
+  }
+  if (value === "deny") {
+    return "deny";
+  }
+  throw new Error(
+    `MEDIATOR_PUBLICATION_SERVE_DEFAULT must be "allow" or "deny", got ${value}`
+  );
 }

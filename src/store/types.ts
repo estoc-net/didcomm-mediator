@@ -44,6 +44,49 @@ export interface StoredCard {
   root: string | null;
 }
 
+/*
+ * Operator policy — the compliance layer's storage. A rule names one subject
+ * (a DID or a CID) and what the relay does about it. Rules are operator
+ * decisions, distinct in every way from an owner's takedown card: no protocol
+ * event occurs, readers see the same responses absence produces.
+ */
+
+export type PolicyKind = "did" | "cid";
+
+/**
+ * `block` — refuse to serve (and, for a DID, to accept publishes), answering
+ * exactly as if the subject did not exist; `legal` — the same refusal, but
+ * HTTP reads may say so (451); `allow` — list the subject into a deployment
+ * whose serve default is deny.
+ */
+export type PolicyMode = "allow" | "block" | "legal";
+
+export interface PolicyRule {
+  kind: PolicyKind;
+  subject: string;
+  mode: PolicyMode;
+  /**
+   * Epoch ms; while in the future, a `cid` rule's object survives the purge
+   * even when nothing references it — quarantined evidence under a legal
+   * preservation duty is frozen, never collected. Null = no hold.
+   */
+  holdUntil: number | null;
+  /** Operator's own annotation (ticket number, report reference). */
+  note: string | null;
+  createdAt: number;
+}
+
+/** One line of the operator-action audit trail — the only compliance log. */
+export interface PolicyAuditEntry {
+  at: number;
+  action: "set" | "clear";
+  kind: PolicyKind;
+  subject: string;
+  mode: PolicyMode | null;
+  holdUntil: number | null;
+  note: string | null;
+}
+
 export interface MediationStore {
   /**
    * The mediator's stored identity secrets as JSON, or null before first
@@ -106,7 +149,28 @@ export interface MediationStore {
   /** Which of these CIDs are present, and their byte lengths. */
   objectsPresent(cids: string[]): Promise<Map<string, number>>;
 
-  /** Also drops unreferenced objects past the staging grace period. */
+  /**
+   * Also drops unreferenced objects past the staging grace period — except
+   * objects a `cid` policy rule holds (`hold_until` in the future).
+   */
   purgeExpired(): Promise<number>;
+
+  /*
+   * Operator policy rules and their audit trail. Writes append to the audit
+   * trail themselves, so no caller can change policy without leaving a line.
+   */
+
+  /** Upsert a rule (kind + subject is the identity). */
+  setPolicyRule(rule: Omit<PolicyRule, "createdAt">): Promise<void>;
+  /** Remove a rule; returns whether one existed. */
+  clearPolicyRule(kind: PolicyKind, subject: string): Promise<boolean>;
+  /** The rules covering these subjects, keyed by subject. */
+  policyRules(kind: PolicyKind, subjects: string[]): Promise<Map<string, PolicyRule>>;
+  listPolicyRules(): Promise<PolicyRule[]>;
+  /** Most recent first. */
+  policyAudit(limit: number): Promise<PolicyAuditEntry[]>;
+  /** Owners whose current publication closure references this CID. */
+  referencingOwners(cid: string): Promise<string[]>;
+
   close(): void;
 }

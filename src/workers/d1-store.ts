@@ -2,6 +2,9 @@ import { chunked } from "../store/types.js";
 import type {
   AddRecipientResult,
   MediationStore,
+  PolicyAuditEntry,
+  PolicyKind,
+  PolicyRule,
   RecipientPage,
   StoredCard,
   StoredMessage,
@@ -141,6 +144,29 @@ export class D1Store implements MediationStore {
          )`
       ),
       this.db.prepare("CREATE INDEX IF NOT EXISTS pf_refs_cid ON pf_refs(cid)"),
+      this.db.prepare(
+        `CREATE TABLE IF NOT EXISTS pf_policy (
+           kind       TEXT NOT NULL,
+           subject    TEXT NOT NULL,
+           mode       TEXT NOT NULL,
+           hold_until INTEGER,
+           note       TEXT,
+           created_at INTEGER NOT NULL,
+           PRIMARY KEY (kind, subject)
+         )`
+      ),
+      this.db.prepare(
+        `CREATE TABLE IF NOT EXISTS pf_audit (
+           id         INTEGER PRIMARY KEY AUTOINCREMENT,
+           at         INTEGER NOT NULL,
+           action     TEXT NOT NULL,
+           kind       TEXT NOT NULL,
+           subject    TEXT NOT NULL,
+           mode       TEXT,
+           hold_until INTEGER,
+           note       TEXT
+         )`
+      ),
     ]);
 
     // Two earlier pf_objects schemas exist in the wild. The first public-
@@ -490,8 +516,11 @@ export class D1Store implements MediationStore {
     // Objects nothing references any more: staged for a publish that never
     // finished, or freed when a newer card replaced their closure. The
     // grace period keeps multi-round publishes and the cache courtesy alive.
+    // A live policy hold pins the object regardless — quarantined evidence
+    // outlives its references.
     const orphans =
-      "created_at <= ? AND cid NOT IN (SELECT cid FROM pf_refs)";
+      "created_at <= ? AND cid NOT IN (SELECT cid FROM pf_refs) " +
+      "AND cid NOT IN (SELECT subject FROM pf_policy WHERE kind = 'cid' AND hold_until > ?)";
     const cutoff = Date.now() - this.stagedTtlMs;
 
     if (this.objects === null) {
@@ -499,7 +528,9 @@ export class D1Store implements MediationStore {
         this.db
           .prepare("DELETE FROM messages WHERE expires_at <= ?")
           .bind(Date.now()),
-        this.db.prepare(`DELETE FROM pf_objects WHERE ${orphans}`).bind(cutoff),
+        this.db
+          .prepare(`DELETE FROM pf_objects WHERE ${orphans}`)
+          .bind(cutoff, Date.now()),
       ]);
       return messages.meta.changes + objects.meta.changes;
     }
@@ -509,7 +540,7 @@ export class D1Store implements MediationStore {
     // re-put heals; deleting R2 first could leave rows claiming lost bytes.
     const { results } = await this.db
       .prepare(`SELECT cid, store FROM pf_objects WHERE ${orphans}`)
-      .bind(cutoff)
+      .bind(cutoff, Date.now())
       .all<{ cid: string; store: string }>();
     const cids = results.map((row) => row.cid);
     if (cids.length > 0) {
@@ -537,6 +568,148 @@ export class D1Store implements MediationStore {
       .bind(Date.now())
       .run();
     return messages.meta.changes + cids.length;
+  }
+
+  async setPolicyRule(rule: Omit<PolicyRule, "createdAt">): Promise<void> {
+    await this.init();
+    const now = Date.now();
+    // One batch = one transaction: no rule change without its audit line.
+    await this.db.batch([
+      this.db
+        .prepare(
+          "INSERT INTO pf_policy (kind, subject, mode, hold_until, note, created_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?) " +
+            "ON CONFLICT(kind, subject) DO UPDATE SET mode = excluded.mode, " +
+            "hold_until = excluded.hold_until, note = excluded.note"
+        )
+        .bind(rule.kind, rule.subject, rule.mode, rule.holdUntil, rule.note, now),
+      this.db
+        .prepare(
+          "INSERT INTO pf_audit (at, action, kind, subject, mode, hold_until, note) " +
+            "VALUES (?, 'set', ?, ?, ?, ?, ?)"
+        )
+        .bind(now, rule.kind, rule.subject, rule.mode, rule.holdUntil, rule.note),
+    ]);
+  }
+
+  async clearPolicyRule(kind: PolicyKind, subject: string): Promise<boolean> {
+    await this.init();
+    const result = await this.db
+      .prepare("DELETE FROM pf_policy WHERE kind = ? AND subject = ?")
+      .bind(kind, subject)
+      .run();
+    if (result.meta.changes === 0) {
+      return false;
+    }
+    await this.db
+      .prepare(
+        "INSERT INTO pf_audit (at, action, kind, subject) VALUES (?, 'clear', ?, ?)"
+      )
+      .bind(Date.now(), kind, subject)
+      .run();
+    return true;
+  }
+
+  async policyRules(
+    kind: PolicyKind,
+    subjects: string[]
+  ): Promise<Map<string, PolicyRule>> {
+    await this.init();
+    const rules = new Map<string, PolicyRule>();
+    if (subjects.length === 0) {
+      return rules;
+    }
+    const results = await this.db.batch(
+      chunked(subjects).map((chunk) =>
+        this.db
+          .prepare(
+            "SELECT subject, mode, hold_until, note, created_at FROM pf_policy " +
+              `WHERE kind = ? AND subject IN (${chunk.map(() => "?").join(", ")})`
+          )
+          .bind(kind, ...chunk)
+      )
+    );
+    for (const result of results) {
+      for (const row of result.results as {
+        subject: string;
+        mode: string;
+        hold_until: number | null;
+        note: string | null;
+        created_at: number;
+      }[]) {
+        rules.set(row.subject, {
+          kind,
+          subject: row.subject,
+          mode: row.mode as PolicyRule["mode"],
+          holdUntil: row.hold_until,
+          note: row.note,
+          createdAt: row.created_at,
+        });
+      }
+    }
+    return rules;
+  }
+
+  async listPolicyRules(): Promise<PolicyRule[]> {
+    await this.init();
+    const { results } = await this.db
+      .prepare(
+        "SELECT kind, subject, mode, hold_until, note, created_at FROM pf_policy " +
+          "ORDER BY created_at, kind, subject"
+      )
+      .all<{
+        kind: string;
+        subject: string;
+        mode: string;
+        hold_until: number | null;
+        note: string | null;
+        created_at: number;
+      }>();
+    return results.map((row) => ({
+      kind: row.kind as PolicyKind,
+      subject: row.subject,
+      mode: row.mode as PolicyRule["mode"],
+      holdUntil: row.hold_until,
+      note: row.note,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async policyAudit(limit: number): Promise<PolicyAuditEntry[]> {
+    await this.init();
+    const { results } = await this.db
+      .prepare(
+        "SELECT at, action, kind, subject, mode, hold_until, note FROM pf_audit " +
+          "ORDER BY id DESC LIMIT ?"
+      )
+      .bind(limit)
+      .all<{
+        at: number;
+        action: string;
+        kind: string;
+        subject: string;
+        mode: string | null;
+        hold_until: number | null;
+        note: string | null;
+      }>();
+    return results.map((row) => ({
+      at: row.at,
+      action: row.action as PolicyAuditEntry["action"],
+      kind: row.kind as PolicyKind,
+      subject: row.subject,
+      mode: row.mode as PolicyAuditEntry["mode"],
+      holdUntil: row.hold_until,
+      note: row.note,
+    }));
+  }
+
+  async referencingOwners(cid: string): Promise<string[]> {
+    await this.init();
+    const { results } = await this.db
+      .prepare("SELECT owner_did FROM pf_refs WHERE cid = ?")
+      .bind(cid)
+      .all<{ owner_did: string }>();
+    return results.map((row) => row.owner_did);
   }
 
   close(): void {
