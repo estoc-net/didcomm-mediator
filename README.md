@@ -199,6 +199,12 @@ disappears from the public face while the evidence outlives the purge.
 The serve default is not a CLI concern — it's deployment configuration
 (`MEDIATOR_PUBLICATION_SERVE_DEFAULT` above).
 
+What to do with these tools — who to report to, how long to hold, in
+what order — is jurisdiction, not mechanism.
+[docs/compliance-canada.md](docs/compliance-canada.md) is the worked
+example for a Canadian operator; other jurisdictions want their own
+version of that file over the same core.
+
 ## Development
 
 ```sh
