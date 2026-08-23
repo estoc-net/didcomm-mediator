@@ -10,15 +10,13 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.workers.json",
     "docker:build": "docker build -t ghcr.io/estoc-net/didcomm-mediator .",
     "dev:workers": "wrangler dev",
-    "smoke": "tsx scripts/smoke.ts",
-    "policy": "tsx src/policy-cli.ts"
+    "smoke": "tsx scripts/smoke.ts"
   },
   "author": "merely",
   "license": "Apache-2.0",
   "description": "A DIDComm v2 mediator anyone can run: coordinate-mediation/3.0, messagepickup/3.0, routing/2.0 over plain HTTP/WS transport",
   "dependencies": {
     "@estoc/did-peer": "^0.1.0",
-    "@estoc/signed-dir": "^0.2.0",
     "@hono/node-server": "^1.19.17",
     "@hono/node-ws": "^1.3.1",
     "better-sqlite3": "^11.8.1",
@@ -27,7 +25,6 @@
     "didcomm": "^0.4.1",
     "didcomm-node": "^0.4.1",
     "hono": "^4.13.1",
-    "multiformats": "^14.0.5",
     "web-did-resolver": "^2.0.27"
   },
   "devDependencies": {

@@ -1,10 +1,6 @@
 import type { Secret } from "@estoc/did-peer";
 
-import {
-  parseDidMethods,
-  parseServeDefault,
-  type MediatorPolicy,
-} from "../config.js";
+import { parseDidMethods, type MediatorPolicy } from "../config.js";
 import { DIDCommContext } from "../didcomm/didcomm.js";
 import {
   identityFor,
@@ -16,25 +12,14 @@ import { D1Store } from "./d1-store.js";
 export interface Env {
   DB: D1Database;
   INBOX: DurableObjectNamespace;
-  /**
-   * Optional R2 bucket for public-folder object bytes; without it they live
-   * as D1 blobs. Optional on purpose: enabling R2 requires a payment method
-   * on the Cloudflare account even within its free tier, and the one-click
-   * deploy must stay free of that demand.
-   */
-  PF_OBJECTS?: R2Bucket;
   /** Ordered, comma-separated: "web,peer2". First = primary; default: web. */
   MEDIATOR_DID_METHODS?: string;
   MEDIATOR_OPEN_REGISTRATION?: string;
   MEDIATOR_CORS_ORIGIN?: string;
   MEDIATOR_MESSAGE_TTL_SECONDS?: string;
   MEDIATOR_MAX_MESSAGES_PER_ACCOUNT?: string;
-  MEDIATOR_MAX_PUBLICATION_BYTES?: string;
-  MEDIATOR_PUBLICATION_RETAIN_SECONDS?: string;
   /** Abuse contact for the invitation page's footer; unset = no footer. */
   MEDIATOR_ABUSE_EMAIL?: string;
-  /** public-folder serve default: "allow" (default) or "deny". */
-  MEDIATOR_PUBLICATION_SERVE_DEFAULT?: string;
 }
 
 export interface WorkerDeps {
@@ -50,17 +35,8 @@ export function policyFromEnv(env: Env): MediatorPolicy {
     corsOrigin: env.MEDIATOR_CORS_ORIGIN ?? "*",
     messageTtlSeconds: Number(env.MEDIATOR_MESSAGE_TTL_SECONDS ?? 7 * 24 * 3600),
     maxMessagesPerAccount: Number(env.MEDIATOR_MAX_MESSAGES_PER_ACCOUNT ?? 1000),
-    maxPublicationBytes: Number(
-      env.MEDIATOR_MAX_PUBLICATION_BYTES ?? 16 * 1024 * 1024
-    ),
-    publicationRetainSeconds: Number(
-      env.MEDIATOR_PUBLICATION_RETAIN_SECONDS ?? 365 * 24 * 3600
-    ),
     // `||` on purpose: an empty string means unset, same as Node's env().
     abuseEmail: env.MEDIATOR_ABUSE_EMAIL || null,
-    publicationServeDefault: parseServeDefault(
-      env.MEDIATOR_PUBLICATION_SERVE_DEFAULT || undefined
-    ),
   };
 }
 
@@ -69,7 +45,6 @@ export function storeFromEnv(env: Env): D1Store {
   return new D1Store(env.DB, {
     messageTtlSeconds: policy.messageTtlSeconds,
     maxMessagesPerAccount: policy.maxMessagesPerAccount,
-    objects: env.PF_OBJECTS,
   });
 }
 

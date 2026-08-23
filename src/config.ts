@@ -15,31 +15,10 @@ export interface MediatorPolicy {
   messageTtlSeconds: number;
   maxMessagesPerAccount: number;
   /**
-   * public-folder: the per-publication size ceiling (total file bytes under
-   * one card's root). Enforced before content travels — the root node's
-   * declared total — and again against actual stored bytes.
-   */
-  maxPublicationBytes: number;
-  /**
-   * public-folder: the lease length promised in every `published` receipt
-   * (`retain_until` = now + this). A lower bound — this relay never collects
-   * a live publication, so the promise is trivially honoured; republishing
-   * renews it.
-   */
-  publicationRetainSeconds: number;
-  /**
    * The operator's abuse contact, shown in the footer of the human-facing
    * invitation page. Null means no contact line is rendered.
    */
   abuseEmail: string | null;
-  /**
-   * public-folder: whether folders are served unless refused ("allow" — a
-   * public relay with a blocklist) or refused unless listed ("deny" — a
-   * personal relay serving only allowlisted DIDs). Same policy table either
-   * way; only the default inverts. Publishing is unaffected — mediation
-   * gates that.
-   */
-  publicationServeDefault: "allow" | "deny";
 }
 
 export interface MediatorConfig extends MediatorPolicy {
@@ -103,29 +82,6 @@ export function configFromEnv(): MediatorConfig {
     corsOrigin: env("MEDIATOR_CORS_ORIGIN") ?? "*",
     messageTtlSeconds: Number(env("MEDIATOR_MESSAGE_TTL_SECONDS") ?? 7 * 24 * 3600),
     maxMessagesPerAccount: Number(env("MEDIATOR_MAX_MESSAGES_PER_ACCOUNT") ?? 1000),
-    maxPublicationBytes: Number(
-      env("MEDIATOR_MAX_PUBLICATION_BYTES") ?? 16 * 1024 * 1024
-    ),
-    publicationRetainSeconds: Number(
-      env("MEDIATOR_PUBLICATION_RETAIN_SECONDS") ?? 365 * 24 * 3600
-    ),
     abuseEmail: env("MEDIATOR_ABUSE_EMAIL") ?? null,
-    publicationServeDefault: parseServeDefault(
-      env("MEDIATOR_PUBLICATION_SERVE_DEFAULT")
-    ),
   };
-}
-
-export function parseServeDefault(
-  value: string | undefined
-): "allow" | "deny" {
-  if (value === undefined || value === "allow") {
-    return "allow";
-  }
-  if (value === "deny") {
-    return "deny";
-  }
-  throw new Error(
-    `MEDIATOR_PUBLICATION_SERVE_DEFAULT must be "allow" or "deny", got ${value}`
-  );
 }

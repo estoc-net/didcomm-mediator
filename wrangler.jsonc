@@ -40,31 +40,17 @@
   // Hourly purge of expired messages.
   "triggers": { "crons": ["17 * * * *"] },
   "observability": { "enabled": true },
-  // Optional shape: keep public-folder object bytes in R2 instead of D1
-  // blobs (recommended for anything beyond light publishing — D1 caps a
-  // database at 500 MB on the free plan and the whole mediator shares it).
-  // Not the default because enabling R2 requires a payment method on the
-  // Cloudflare account even inside its free tier, and the one-click deploy
-  // must not ask for one. To run it:
-  //   wrangler r2 bucket create didcomm-mediator-objects
-  //   wrangler deploy --env r2
-  // Same worker, same database — just the extra binding, so switching on a
-  // live deployment is safe (existing D1-blob objects keep serving). Once
-  // on R2, keep deploying with --env r2: a plain deploy would drop the
-  // binding and orphan the R2-held bytes (their rows would still claim
-  // presence). Bindings aren't inherited into environments, so the D1 and
+  // This deployment's own settings, deployed with `wrangler deploy --env
+  // prod` — the same worker and database, just the extra vars. Kept in an
+  // environment because the one-click deploy must not ship someone else's
+  // abuse inbox. Bindings aren't inherited into environments, so the D1 and
   // DO blocks are repeated here verbatim — keep them in sync.
   "env": {
-    "r2": {
+    "prod": {
       "name": "didcomm-mediator",
       "vars": {
         "MEDIATOR_DID_METHODS": "web,peer2",
-        // 4 MiB publication ceiling; the code default (16 MiB) is more than
-        // this deployment wants to hold per DID.
-        "MEDIATOR_MAX_PUBLICATION_BYTES": "4194304",
         // This deployment's operator contact, shown on the invitation page.
-        // Deliberately not in the top-level vars: the one-click deploy must
-        // not ship someone else's abuse inbox.
         "MEDIATOR_ABUSE_EMAIL": "abuse@merely.ca"
       },
       "durable_objects": {
@@ -76,9 +62,6 @@
           "database_name": "didcomm-mediator",
           "database_id": "e57679e6-e700-46e9-abbf-a9b529a5a67d"
         }
-      ],
-      "r2_buckets": [
-        { "binding": "PF_OBJECTS", "bucket_name": "didcomm-mediator-objects" }
       ]
     }
   }

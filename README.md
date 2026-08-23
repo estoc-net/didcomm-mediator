@@ -39,15 +39,6 @@ dev:workers` serves `did:web:localhost%3A8787` the same way.
 grant, keylist, anonymous forward, pickup, WebSocket live delivery — against
 any running mediator, whichever target it is.
 
-By default everything, public-folder object bytes included, lives in the one
-D1 database — zero extra services, but D1 caps a database at 500 MB on the
-free plan. For anything beyond light publishing, move the bytes to R2 (10 GB
-free, zero egress): create a bucket and uncomment the `r2_buckets` block in
-`wrangler.jsonc`, then redeploy. It's opt-in because enabling R2 requires a
-payment method on the Cloudflare account even inside the free tier. The
-switch is safe on a live mediator (existing D1-held objects keep serving),
-but don't remove the binding afterwards without clearing the `pf_*` tables.
-
 ## Quick start (Docker)
 
 ```sh
@@ -109,7 +100,6 @@ nothing is configured, and no name is more real than another.
 | [routing/2.0](https://didcomm.org/routing/2.0) | inbound forward for mediated recipients |
 | [discover-features/2.0](https://didcomm.org/discover-features/2.0) | protocol disclosure |
 | [trust-ping/2.0](https://didcomm.org/trust-ping/2.0) | liveness |
-| [public-folder/1.0](https://github.com/estoc-net/public-folder) | signed public folders: anonymous `query` reads, owner `publish` writes (relay role) |
 | [out-of-band/2.0](https://didcomm.org/out-of-band/2.0) | invitation issuing (`GET /invitation`, `?_oob=` URL) |
 
 ## Transport
@@ -132,19 +122,11 @@ knows:
 - `GET /invitation` — the out-of-band 2.0 invitation as a plaintext JWM. The
   same invitation, base64url-encoded, rides the `?_oob=` parameter of the
   invitation URL — the string to put in a QR code for any standard wallet.
-- `GET /objects/<cid>` — public-folder trustless read: the object's bytes,
-  content-addressed and immutable (`application/vnd.ipld.raw` for files,
-  `application/vnd.ipld.dag-json` for directory nodes).
-- `GET /card/<did>` — the owner's current public-folder root card as a
-  compact JWS (`application/jose`); the DID is percent-encoded.
 - `GET /health`.
 
-Anonymous (anoncrypt) envelopes may only carry `forward` and the
-public-folder `query` — the outer envelope of a forward is anonymous by
-design, and a folder query is anonymous by design (the answer's authority is
-the owner's signature, not the asker's identity). Everything that grants or
-writes state requires an authcrypt envelope, and the proven sender DID *is*
-the account.
+Anonymous (anoncrypt) envelopes may only carry `forward` — the outer envelope
+of a forward is anonymous by design. Everything that grants or writes state
+requires an authcrypt envelope, and the proven sender DID *is* the account.
 
 ## Configuration
 
@@ -158,56 +140,7 @@ the account.
 | `MEDIATOR_CORS_ORIGIN` | `*` | CORS for browser agents |
 | `MEDIATOR_MESSAGE_TTL_SECONDS` | 7 days | Unclaimed messages expire |
 | `MEDIATOR_MAX_MESSAGES_PER_ACCOUNT` | `1000` | Inbox quota |
-| `MEDIATOR_MAX_PUBLICATION_BYTES` | 16 MiB | public-folder: size ceiling per publication (total file bytes under one root) |
-| `MEDIATOR_PUBLICATION_RETAIN_SECONDS` | 1 year | public-folder: storage lease promised in every `published` receipt (`retain_until` = now + this) |
-| `MEDIATOR_PUBLICATION_SERVE_DEFAULT` | `allow` | public-folder: `allow` serves every published folder minus the operator blocklist; `deny` serves only allowlisted DIDs (a personal relay's closed-by-default) |
 | `MEDIATOR_ABUSE_EMAIL` | unset | Abuse contact shown in the invitation page's footer |
-
-### Operator policy
-
-Storing other people's public folders makes the operator a content host,
-with the removal and preservation duties that follow. The relay ships the
-universal core (public-folder spec §7): per-DID / per-CID rules in the
-`pf_policy` table — `block` answers exactly as absence (no tipping off),
-`legal` may say so over HTTP (451), `allow` lists a DID into a `deny`
-default — plus an evidence hold (`hold_until` pins an object through the
-purge) and an append-only `pf_audit` trail of every rule change. Blocking
-is enforced at publish time (refused, never stored) and at serve time
-(DIDComm query and HTTP reads alike — the browse-domain gateway forwards
-these reads, so it needs nothing of its own).
-
-Rules are managed with the operator CLI, which speaks to either target:
-
-```sh
-# Docker / Node: point at the SQLite file on the data volume
-npm run policy -- --db ./data/mediator.db list
-
-# Cloudflare Workers: wraps `wrangler d1 execute` (database name read
-# from wrangler.jsonc; --database / --env override)
-npm run policy -- --remote audit --limit 20
-
-npm run policy -- --db ./data/mediator.db block did:web:evil.example --note "ticket 7"
-npm run policy -- --db ./data/mediator.db quarantine did:web:reported.example
-```
-
-`status` answers whether a DID or CID is on this mediator from metadata
-alone — card, closure counts, object sizes, references, rule — without
-ever fetching content, which is what an abuse assessment needs (the
-public HTTP face deliberately 404s hidden and absent alike).
-`block`, `legal`, and `allow` take a DID or a CID (the kind is inferred),
-an optional `--hold 365d` and `--note`; `clear` removes a rule, and every
-change — CLI or not — lands on the audit trail. `quarantine` is the
-takedown-request verb: it blocks the DID and puts a hold (default 365
-days) on every object in its current publication closure, so the content
-disappears from the public face while the evidence outlives the purge.
-The serve default is not a CLI concern — it's deployment configuration
-(`MEDIATOR_PUBLICATION_SERVE_DEFAULT` above).
-
-What to do with these tools — who to report to, how long to hold, in
-what order — is jurisdiction, not mechanism.
-[docs/compliance-canada.md](docs/compliance-canada.md) is the worked
-example for a Canadian operator; other jurisdictions want their own
-version of that file over the same core.
 
 ## Development
 
@@ -231,22 +164,6 @@ npm run typecheck
   claims: grants and reads key off the authcrypt key's DID.
 - **Live delivery pushes but never hands off.** A pushed message stays queued
   until `messages-received`; a dropped socket loses nothing.
-- **The public-folder relay holds no owner keys and interprets nothing.**
-  Everything it serves about an owner traces to the owner's signed root card;
-  its own work is hashing objects against the CIDs that name them. A
-  mediation relationship is what grants publish rights (for the account's DID
-  or any recipient DID bound to it); the served version is simply the most
-  recent authenticated publish. Objects are refcounted by the current
-  publications that reach them — replaced or never-completed publications
-  lose protection, and orphaned objects are reclaimed by the same purge that
-  expires messages (after a grace period, so multi-round publishes finish).
-  On Workers the object *bytes* can optionally live in R2 while D1 keeps the
-  relational half (presence, sizes, refcounts) — each row explicitly names
-  the backend holding its bytes; ordering makes the split crash-safe — bytes
-  land before the row that announces them, rows are reclaimed before the
-  bytes they point at, and any blob stranded in between is invisible until
-  the next content-addressed re-put heals it.
-
 - **The runtimes differ only where they must.** The wire surface is one Hono
   app (`src/app.ts`) and the protocol layer is runtime-free; Node keeps live
   sockets in process memory, Workers keep them in a Durable Object, and the

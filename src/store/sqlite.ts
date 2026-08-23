@@ -8,8 +8,6 @@ export interface SqliteStoreOptions {
   messageTtlSeconds?: number;
   /** Past this many waiting messages an account stops receiving new ones. */
   maxMessagesPerAccount?: number;
-  /** Unreferenced public-folder objects older than this are purged. */
-  stagedObjectTtlSeconds?: number;
 }
 
 /** better-sqlite3 is synchronous; a batch is simply a transaction. */

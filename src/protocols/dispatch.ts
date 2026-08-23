@@ -24,12 +24,6 @@ import { FORWARD, forward } from "./routing.js";
 import { QUERIES, queries } from "./discover-features.js";
 import { PING, ping } from "./trust-ping.js";
 import { PROBLEM_REPORT } from "./problem-report.js";
-import {
-  PUBLISH as PF_PUBLISH,
-  QUERY as PF_QUERY,
-  publish as pfPublish,
-  query as pfQuery,
-} from "./public-folder.js";
 
 const HANDLERS: Record<string, Handler> = {
   [MEDIATE_REQUEST]: mediateRequest,
@@ -42,8 +36,6 @@ const HANDLERS: Record<string, Handler> = {
   [FORWARD]: forward,
   [QUERIES]: queries,
   [PING]: ping,
-  [PF_QUERY]: pfQuery,
-  [PF_PUBLISH]: pfPublish,
 };
 
 /**
@@ -99,14 +91,7 @@ export async function dispatch(
   const handler = HANDLERS[incoming.message.type] ?? unknownType;
   const reply = await handler(incoming, context);
 
-  // public-folder queries are anonymous by design: the requester's DID is a
-  // mailbox, not an identity, so an anoncrypted query is answered to the DID
-  // the plaintext claims — the reply only ever rides the connection the query
-  // came in on (return-route), so an unverifiable `from` misleads nobody but
-  // the sender itself.
-  const replyTo =
-    context.sender ??
-    (incoming.message.type === PF_QUERY ? incoming.from : null);
+  const replyTo = context.sender;
 
   if (reply === null || replyTo === null || !routed) {
     return null;

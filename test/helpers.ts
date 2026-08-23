@@ -18,10 +18,7 @@ export const TEST_CONFIG: MediatorConfig = {
   corsOrigin: "*",
   messageTtlSeconds: 3600,
   maxMessagesPerAccount: 5,
-  maxPublicationBytes: 16 * 1024 * 1024,
-  publicationRetainSeconds: 365 * 24 * 3600,
   abuseEmail: "abuse@mediator.test",
-  publicationServeDefault: "allow",
 };
 
 export function memoryStore(): SqliteStore {
