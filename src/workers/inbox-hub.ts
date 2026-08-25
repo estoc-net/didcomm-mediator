@@ -1,3 +1,4 @@
+import { frameBytes } from "../app.js";
 import { dispatch } from "../protocols/dispatch.js";
 import type { Session } from "../protocols/types.js";
 import { Sessions } from "../transport/sessions.js";
@@ -151,6 +152,10 @@ export class InboxHub {
     }
     try {
       const deps = await this.depsFor(session.origin);
+      if (frameBytes(message) > deps.policy.maxMessageBytes) {
+        console.warn("websocket envelope refused: too large");
+        return;
+      }
       const raw =
         typeof message === "string"
           ? message

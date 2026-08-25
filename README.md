@@ -140,6 +140,7 @@ requires an authcrypt envelope, and the proven sender DID *is* the account.
 | `MEDIATOR_CORS_ORIGIN` | `*` | CORS for browser agents |
 | `MEDIATOR_MESSAGE_TTL_SECONDS` | 7 days | Unclaimed messages expire |
 | `MEDIATOR_MAX_MESSAGES_PER_ACCOUNT` | `1000` | Inbox quota |
+| `MEDIATOR_MAX_MESSAGE_BYTES` | `1048576` (1 MiB) | Largest envelope accepted on the wire; larger gets HTTP 413 (dropped on a socket). Advertised as `maxMessageBytes` in `GET /` |
 | `MEDIATOR_ABUSE_EMAIL` | unset | Abuse contact shown in the invitation page's footer |
 
 ## Development

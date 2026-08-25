@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 
 import type { MediatorPolicy } from "./config.js";
@@ -37,6 +37,26 @@ export interface AppDeps {
  * the runtimes genuinely differ, so each target mounts its own handler there
  * — the plain GET below steps aside for anything carrying an Upgrade header.
  */
+function tooLarge(c: Context, limit: number) {
+  return c.json({ error: `Envelope exceeds ${limit} bytes` }, 413);
+}
+
+/**
+ * The size of one WebSocket frame's payload, before decoding — the same
+ * ceiling the HTTP entry applies, for the runtimes' socket handlers.
+ */
+export function frameBytes(
+  data: string | ArrayBufferLike | ArrayBufferView | Blob
+): number {
+  if (typeof data === "string") {
+    return new TextEncoder().encode(data).byteLength;
+  }
+  if (data instanceof Blob) {
+    return data.size;
+  }
+  return data.byteLength;
+}
+
 export function buildApp({
   ctx,
   store,
@@ -73,9 +93,23 @@ export function buildApp({
       );
     }
 
+    // Size is judged on the bytes received, before any parsing: the
+    // Content-Length lets an oversize envelope be refused without reading
+    // it, and the body length catches a chunked one after. The 413 reaches
+    // the sender synchronously — which is the only bounce a forward gets,
+    // since its DIDComm layer is anonymous and fire-and-forget.
+    const declared = Number(c.req.header("content-length"));
+    if (declared > policy.maxMessageBytes) {
+      return tooLarge(c, policy.maxMessageBytes);
+    }
+    const raw = await c.req.arrayBuffer();
+    if (raw.byteLength > policy.maxMessageBytes) {
+      return tooLarge(c, policy.maxMessageBytes);
+    }
+
     let packed: string | null;
     try {
-      const unpacked = await ctx.unpack(await c.req.text());
+      const unpacked = await ctx.unpack(new TextDecoder().decode(raw));
       packed = await dispatch(unpacked, {
         ctx,
         store,
@@ -101,6 +135,8 @@ export function buildApp({
     dids: ctx.dids,
     invitationUrl: oobUrl,
     protocols: SUPPORTED_PROTOCOLS,
+    // The wire ceiling, so a client can size an envelope before sending it.
+    maxMessageBytes: policy.maxMessageBytes,
   });
 
   // Plain GET / answers humans and probes; an Upgrade request falls through

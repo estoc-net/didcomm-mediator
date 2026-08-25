@@ -18,6 +18,7 @@ export const TEST_CONFIG: MediatorConfig = {
   corsOrigin: "*",
   messageTtlSeconds: 3600,
   maxMessagesPerAccount: 5,
+  maxMessageBytes: 64 * 1024,
   abuseEmail: "abuse@mediator.test",
 };
 

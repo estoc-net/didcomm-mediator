@@ -338,6 +338,36 @@ describe("supporting protocols", () => {
     expect(reply?.body.code).toBe("e.p.msg.unsupported");
   });
 
+  it("refuses an oversize envelope with a 413, by Content-Length before reading it", async () => {
+    const res = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": ENCRYPTED,
+        "content-length": String(TEST_CONFIG.maxMessageBytes + 1),
+      },
+      body: "x",
+    });
+    expect(res.status).toBe(413);
+  });
+
+  it("refuses an oversize envelope with a 413 by its body when no length is declared", async () => {
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": ENCRYPTED },
+      body: "x".repeat(TEST_CONFIG.maxMessageBytes + 1),
+    });
+    expect(res.status).toBe(413);
+  });
+
+  it("still takes an envelope right at the ceiling (as far as size goes)", async () => {
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": ENCRYPTED },
+      body: "x".repeat(TEST_CONFIG.maxMessageBytes),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("rejects garbage with a 400", async () => {
     const res = await app.request("/", {
       method: "POST",
@@ -438,11 +468,13 @@ describe("out-of-band/2.0", () => {
   it("keeps GET / as JSON for non-browser probes", async () => {
     const res = await app.request("/");
     expect(res.headers.get("content-type")).toContain("application/json");
-    const { did, invitationUrl } = (await res.json()) as {
+    const { did, invitationUrl, maxMessageBytes } = (await res.json()) as {
       did: string;
       invitationUrl: string;
+      maxMessageBytes: number;
     };
     expect(did).toBe(mediator.did);
     expect(invitationUrl).toContain("_oob=");
+    expect(maxMessageBytes).toBe(TEST_CONFIG.maxMessageBytes);
   });
 });

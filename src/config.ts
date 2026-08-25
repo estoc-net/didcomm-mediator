@@ -15,6 +15,14 @@ export interface MediatorPolicy {
   messageTtlSeconds: number;
   maxMessagesPerAccount: number;
   /**
+   * The largest envelope accepted on the wire, in bytes — measured on the
+   * outer JWE as received, before unpacking, so it bounds everything inside
+   * (a forwarded attachment can only be smaller). Larger envelopes get an
+   * HTTP 413 (or are dropped on a socket). Advertised in GET / so clients
+   * can size a message before sending.
+   */
+  maxMessageBytes: number;
+  /**
    * The operator's abuse contact, shown in the footer of the human-facing
    * invitation page. Null means no contact line is rendered.
    */
@@ -38,6 +46,12 @@ export interface MediatorConfig extends MediatorPolicy {
   port: number;
   dataDir: string;
 }
+
+/**
+ * 1 MiB: what one D1 row and one Workers WebSocket frame comfortably hold,
+ * and the ceiling `@estoc/agent-core`'s object-share sizes against.
+ */
+export const DEFAULT_MAX_MESSAGE_BYTES = 1024 * 1024;
 
 function env(name: string): string | undefined {
   const value = process.env[name];
@@ -82,6 +96,7 @@ export function configFromEnv(): MediatorConfig {
     corsOrigin: env("MEDIATOR_CORS_ORIGIN") ?? "*",
     messageTtlSeconds: Number(env("MEDIATOR_MESSAGE_TTL_SECONDS") ?? 7 * 24 * 3600),
     maxMessagesPerAccount: Number(env("MEDIATOR_MAX_MESSAGES_PER_ACCOUNT") ?? 1000),
+    maxMessageBytes: Number(env("MEDIATOR_MAX_MESSAGE_BYTES") ?? DEFAULT_MAX_MESSAGE_BYTES),
     abuseEmail: env("MEDIATOR_ABUSE_EMAIL") ?? null,
   };
 }

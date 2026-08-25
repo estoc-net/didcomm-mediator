@@ -1,6 +1,6 @@
 import type { Secret } from "@estoc/did-peer";
 
-import { parseDidMethods, type MediatorPolicy } from "../config.js";
+import { DEFAULT_MAX_MESSAGE_BYTES, parseDidMethods, type MediatorPolicy } from "../config.js";
 import { DIDCommContext } from "../didcomm/didcomm.js";
 import {
   identityFor,
@@ -18,6 +18,7 @@ export interface Env {
   MEDIATOR_CORS_ORIGIN?: string;
   MEDIATOR_MESSAGE_TTL_SECONDS?: string;
   MEDIATOR_MAX_MESSAGES_PER_ACCOUNT?: string;
+  MEDIATOR_MAX_MESSAGE_BYTES?: string;
   /** Abuse contact for the invitation page's footer; unset = no footer. */
   MEDIATOR_ABUSE_EMAIL?: string;
 }
@@ -35,6 +36,7 @@ export function policyFromEnv(env: Env): MediatorPolicy {
     corsOrigin: env.MEDIATOR_CORS_ORIGIN ?? "*",
     messageTtlSeconds: Number(env.MEDIATOR_MESSAGE_TTL_SECONDS ?? 7 * 24 * 3600),
     maxMessagesPerAccount: Number(env.MEDIATOR_MAX_MESSAGES_PER_ACCOUNT ?? 1000),
+    maxMessageBytes: Number(env.MEDIATOR_MAX_MESSAGE_BYTES ?? DEFAULT_MAX_MESSAGE_BYTES),
     // `||` on purpose: an empty string means unset, same as Node's env().
     abuseEmail: env.MEDIATOR_ABUSE_EMAIL || null,
   };

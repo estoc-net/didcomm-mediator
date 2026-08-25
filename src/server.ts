@@ -3,7 +3,7 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import type { Hono } from "hono";
 import type { Server } from "node:http";
 
-import { buildApp } from "./app.js";
+import { buildApp, frameBytes } from "./app.js";
 import type { MediatorConfig } from "./config.js";
 import { DIDCommContext } from "./didcomm/didcomm.js";
 import type { MediatorIdentity } from "./identity-core.js";
@@ -81,6 +81,10 @@ export function buildServer({
         },
         async onMessage(evt, ws) {
           session.socket = ws;
+          if (frameBytes(evt.data) > config.maxMessageBytes) {
+            log("websocket envelope refused: too large");
+            return;
+          }
           try {
             const raw =
               typeof evt.data === "string"
