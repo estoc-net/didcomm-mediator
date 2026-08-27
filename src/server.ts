@@ -4,6 +4,8 @@ import type { Hono } from "hono";
 import type { Server } from "node:http";
 
 import { buildApp, frameBytes } from "./app.js";
+import { FsBlobStorage } from "./blobs/fs-storage.js";
+import { BlobService } from "./blobs/service.js";
 import type { MediatorConfig } from "./config.js";
 import { DIDCommContext } from "./didcomm/didcomm.js";
 import type { MediatorIdentity } from "./identity-core.js";
@@ -25,6 +27,8 @@ export interface MediatorServer {
   /** Resolves to the actual bound port (useful with port 0). */
   listen(): Promise<number>;
   close(): Promise<void>;
+  /** Drops blobs nobody holds any more; 0 when blobs are off. */
+  purgeBlobs(): Promise<number>;
 }
 
 /**
@@ -43,11 +47,16 @@ export function buildServer({
     aliases: identity.aliases,
   });
   const sessions = new Sessions();
+  const blobs =
+    config.blobDir === null
+      ? null
+      : new BlobService(store, new FsBlobStorage(config.blobDir), config, config.publicUrl);
   const app = buildApp({
     ctx,
     store,
     policy: config,
     sessions,
+    blobs,
     publicUrl: config.publicUrl,
     webDidDoc: identity.webDidDoc,
     log,
@@ -110,6 +119,7 @@ export function buildServer({
               store,
               config,
               sessions,
+              blobs,
               session,
               sender: unpacked.verifiedFrom,
             });
@@ -150,6 +160,9 @@ export function buildServer({
         server.closeAllConnections();
         server.close((err) => (err ? reject(err) : resolve()));
       });
+    },
+    purgeBlobs(): Promise<number> {
+      return blobs === null ? Promise.resolve(0) : blobs.purge();
     },
   };
 }

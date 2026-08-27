@@ -1,5 +1,6 @@
 import type { IMessage } from "didcomm-node";
 
+import type { BlobService } from "../blobs/service.js";
 import type { MediatorPolicy } from "../config.js";
 import type { DIDCommContext, Unpacked } from "../didcomm/didcomm.js";
 import type { MediationStore } from "../store/types.js";
@@ -39,6 +40,8 @@ export interface HandlerContext {
   store: MediationStore;
   config: MediatorPolicy;
   sessions: LiveSink;
+  /** blob-store/1.0, or null when this deployment keeps no blobs. */
+  blobs: BlobService | null;
   /** The session the message arrived on; null for plain HTTP. */
   session: Session | null;
   /** The DID proven by the envelope (authcrypt or signature); null if anonymous. */

@@ -25,6 +25,20 @@ export interface RecipientPage {
   remaining: number;
 }
 
+export interface BlobInfo {
+  hash: string;
+  size: number;
+  /** When the bytes arrived and were verified; null while still expected. */
+  uploadedAt: number | null;
+  /** The latest retention any mediation holds on it; 0 when nobody does. */
+  retainUntil: number;
+}
+
+export interface UploadGrant {
+  hash: string;
+  size: number;
+}
+
 export interface MediationStore {
   /**
    * The mediator's stored identity secrets as JSON, or null before first
@@ -61,6 +75,35 @@ export interface MediationStore {
   deleteMessages(ownerDid: string, ids: string[]): Promise<string[]>;
 
   purgeExpired(): Promise<number>;
+
+  /*
+   * blob-store/1.0. A blob row is one set of bytes named by hash; a hold is
+   * one mediation's claim on it until a time. Bytes and names are kept by a
+   * BlobStorage; the store only knows what should exist.
+   */
+  blobInfo(hash: string): Promise<BlobInfo | null>;
+  /** Bytes held by this mediation's live holds, uploaded or not. */
+  blobUsage(ownerDid: string): Promise<number>;
+  /** Creates the blob row if absent and sets (or extends) the owner's hold. */
+  holdBlob(
+    ownerDid: string,
+    hash: string,
+    size: number,
+    retainUntil: number
+  ): Promise<void>;
+  /** Whether this mediation holds the blob right now (a live hold). */
+  blobHeld(ownerDid: string, hash: string): Promise<boolean>;
+  releaseBlob(ownerDid: string, hash: string): Promise<void>;
+  /** A one-time upload token for the named blob, good until `expiresAt`. */
+  grantUpload(hash: string, expiresAt: number): Promise<string>;
+  /** The blob a live token names, consumed on read; null if unknown or expired. */
+  claimUpload(token: string): Promise<UploadGrant | null>;
+  markUploaded(hash: string): Promise<void>;
+  /**
+   * Drops expired holds and every blob nobody holds any more; returns the
+   * hashes whose bytes should now be deleted from storage.
+   */
+  purgeBlobs(): Promise<string[]>;
 
   close(): void;
 }

@@ -23,6 +23,15 @@ export interface MediatorPolicy {
    */
   maxMessageBytes: number;
   /**
+   * blob-store/1.0 limits (`docs/blob-store.md` in estoc): how long a put
+   * keeps a blob, the largest blob, and the bytes one mediation may hold at
+   * once. Whether blobs are on at all is a deployment matter (a directory on
+   * Node, an R2 binding on Workers), not policy.
+   */
+  blobRetainSeconds: number;
+  blobMaxBytes: number;
+  blobQuotaBytes: number;
+  /**
    * The operator's abuse contact, shown in the footer of the human-facing
    * invitation page. Null means no contact line is rendered.
    */
@@ -45,6 +54,8 @@ export interface MediatorConfig extends MediatorPolicy {
   host: string;
   port: number;
   dataDir: string;
+  /** Where blob bytes go; null turns blob-store off. */
+  blobDir: string | null;
 }
 
 /**
@@ -52,6 +63,24 @@ export interface MediatorConfig extends MediatorPolicy {
  * and the ceiling `@estoc/agent-core`'s object-share sizes against.
  */
 export const DEFAULT_MAX_MESSAGE_BYTES = 1024 * 1024;
+
+export const DEFAULT_BLOB_RETAIN_SECONDS = 30 * 24 * 3600;
+/**
+ * 100 MiB: what a Workers request body may carry on every plan, and the
+ * upload here is one PUT through the mediator itself.
+ */
+export const DEFAULT_BLOB_MAX_BYTES = 100 * 1024 * 1024;
+export const DEFAULT_BLOB_QUOTA_BYTES = 1024 * 1024 * 1024;
+
+export function blobPolicyFrom(get: (name: string) => string | undefined) {
+  return {
+    blobRetainSeconds: Number(
+      get("MEDIATOR_BLOB_RETAIN_SECONDS") ?? DEFAULT_BLOB_RETAIN_SECONDS
+    ),
+    blobMaxBytes: Number(get("MEDIATOR_BLOB_MAX_BYTES") ?? DEFAULT_BLOB_MAX_BYTES),
+    blobQuotaBytes: Number(get("MEDIATOR_BLOB_QUOTA_BYTES") ?? DEFAULT_BLOB_QUOTA_BYTES),
+  };
+}
 
 function env(name: string): string | undefined {
   const value = process.env[name];
@@ -97,6 +126,12 @@ export function configFromEnv(): MediatorConfig {
     messageTtlSeconds: Number(env("MEDIATOR_MESSAGE_TTL_SECONDS") ?? 7 * 24 * 3600),
     maxMessagesPerAccount: Number(env("MEDIATOR_MAX_MESSAGES_PER_ACCOUNT") ?? 1000),
     maxMessageBytes: Number(env("MEDIATOR_MAX_MESSAGE_BYTES") ?? DEFAULT_MAX_MESSAGE_BYTES),
+    ...blobPolicyFrom(env),
     abuseEmail: env("MEDIATOR_ABUSE_EMAIL") ?? null,
+    // "off" disables blobs; unset means a directory beside the database.
+    blobDir:
+      env("MEDIATOR_BLOB_DIR") === "off"
+        ? null
+        : (env("MEDIATOR_BLOB_DIR") ?? `${env("MEDIATOR_DATA_DIR") ?? "./data"}/blobs`),
   };
 }

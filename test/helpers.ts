@@ -19,7 +19,11 @@ export const TEST_CONFIG: MediatorConfig = {
   messageTtlSeconds: 3600,
   maxMessagesPerAccount: 5,
   maxMessageBytes: 64 * 1024,
+  blobRetainSeconds: 3600,
+  blobMaxBytes: 4096,
+  blobQuotaBytes: 6000,
   abuseEmail: "abuse@mediator.test",
+  blobDir: null,
 };
 
 export function memoryStore(): SqliteStore {

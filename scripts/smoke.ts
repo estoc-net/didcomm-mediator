@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Message } from "didcomm-node";
 import type { IMessage } from "didcomm-node";
 import WebSocket from "ws";
 
 import { DIDCommContext } from "../src/didcomm/didcomm.js";
 import { resolveDIDCommDoc } from "../src/didcomm/did-resolver.js";
+import { blobName } from "../src/blobs/hash.js";
 import { mintIdentity } from "../src/identity-core.js";
 
 /**
@@ -42,9 +43,9 @@ function sameJson(a: unknown, b: unknown): boolean {
   return canonical(a) === canonical(b);
 }
 
-const { did: mediatorDid, invitationUrl } = (await (
+const { did: mediatorDid, invitationUrl, blobs: blobLimits } = (await (
   await fetch(base)
-).json()) as { did: string; invitationUrl: string };
+).json()) as { did: string; invitationUrl: string; blobs?: { maxBytes: number } };
 console.log(`mediator: ${mediatorDid}`);
 
 {
@@ -251,5 +252,39 @@ const garbage = await fetch(base, {
   body: "not an envelope",
 });
 check(garbage.status === 400, "garbage refused with 400");
+
+// --- blob-store/1.0 (when the deployment keeps blobs) -------------------
+
+if (blobLimits === undefined) {
+  console.log("skip: blob-store not advertised");
+} else {
+  const bytes = randomBytes(Math.min(300_000, blobLimits.maxBytes));
+  const hash = blobName(createHash("sha256").update(bytes).digest());
+  const put = await send("https://estoc.dev/blob-store/1.0/put", { hash, size: bytes.length });
+  const upload = put.body.upload as { url: string } | undefined;
+  check(
+    put.type === "https://estoc.dev/blob-store/1.0/put-result" && upload !== undefined,
+    "blob put answered with an upload URL"
+  );
+  const uploaded = await fetch(upload!.url, {
+    method: "PUT",
+    headers: { "content-length": String(bytes.length) },
+    body: bytes,
+  });
+  check(uploaded.status === 204, `blob uploaded → ${uploaded.status}`);
+  const got = await fetch(put.body.url as string, { headers: { range: "bytes=10-19" } });
+  check(
+    got.status === 206 && Buffer.from(await got.arrayBuffer()).equals(bytes.subarray(10, 20)),
+    "blob served with Range"
+  );
+  const renewed = await send("https://estoc.dev/blob-store/1.0/put", { hash, size: bytes.length });
+  check(renewed.body.upload === undefined, "second put is a renewal");
+  const deleted = await send("https://estoc.dev/blob-store/1.0/delete", { hash });
+  check(
+    deleted.type === "https://estoc.dev/blob-store/1.0/delete-result" &&
+      (await fetch(put.body.url as string)).status === 404,
+    "blob deleted and gone"
+  );
+}
 
 console.log("\nsmoke: all green");

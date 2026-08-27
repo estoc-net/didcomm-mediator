@@ -1,6 +1,12 @@
 import type { Secret } from "@estoc/did-peer";
 
-import { DEFAULT_MAX_MESSAGE_BYTES, parseDidMethods, type MediatorPolicy } from "../config.js";
+import { BlobService } from "../blobs/service.js";
+import {
+  DEFAULT_MAX_MESSAGE_BYTES,
+  blobPolicyFrom,
+  parseDidMethods,
+  type MediatorPolicy,
+} from "../config.js";
 import { DIDCommContext } from "../didcomm/didcomm.js";
 import {
   identityFor,
@@ -8,10 +14,13 @@ import {
   type MediatorIdentity,
 } from "../identity-core.js";
 import { D1Store } from "./d1-store.js";
+import { R2BlobStorage } from "./r2-storage.js";
 
 export interface Env {
   DB: D1Database;
   INBOX: DurableObjectNamespace;
+  /** blob-store/1.0's bucket; unbound, the mediator keeps no blobs. */
+  BLOBS?: R2Bucket;
   /** Ordered, comma-separated: "web,peer2". First = primary; default: web. */
   MEDIATOR_DID_METHODS?: string;
   MEDIATOR_OPEN_REGISTRATION?: string;
@@ -19,6 +28,9 @@ export interface Env {
   MEDIATOR_MESSAGE_TTL_SECONDS?: string;
   MEDIATOR_MAX_MESSAGES_PER_ACCOUNT?: string;
   MEDIATOR_MAX_MESSAGE_BYTES?: string;
+  MEDIATOR_BLOB_RETAIN_SECONDS?: string;
+  MEDIATOR_BLOB_MAX_BYTES?: string;
+  MEDIATOR_BLOB_QUOTA_BYTES?: string;
   /** Abuse contact for the invitation page's footer; unset = no footer. */
   MEDIATOR_ABUSE_EMAIL?: string;
 }
@@ -28,6 +40,7 @@ export interface WorkerDeps {
   ctx: DIDCommContext;
   store: D1Store;
   policy: MediatorPolicy;
+  blobs: BlobService | null;
 }
 
 export function policyFromEnv(env: Env): MediatorPolicy {
@@ -37,6 +50,7 @@ export function policyFromEnv(env: Env): MediatorPolicy {
     messageTtlSeconds: Number(env.MEDIATOR_MESSAGE_TTL_SECONDS ?? 7 * 24 * 3600),
     maxMessagesPerAccount: Number(env.MEDIATOR_MAX_MESSAGES_PER_ACCOUNT ?? 1000),
     maxMessageBytes: Number(env.MEDIATOR_MAX_MESSAGE_BYTES ?? DEFAULT_MAX_MESSAGE_BYTES),
+    ...blobPolicyFrom((name) => env[name as keyof Env] as string | undefined),
     // `||` on purpose: an empty string means unset, same as Node's env().
     abuseEmail: env.MEDIATOR_ABUSE_EMAIL || null,
   };
@@ -82,12 +96,26 @@ export async function depsForOrigin(env: Env, origin: string): Promise<WorkerDep
     methods.length > 0 ? methods : ["web"]
   );
 
+  const policy = policyFromEnv(env);
   return {
     identity,
     ctx: new DIDCommContext(identity.did, identity.didDoc, identity.secrets, {
       aliases: identity.aliases,
     }),
     store,
-    policy: policyFromEnv(env),
+    policy,
+    blobs: blobsFor(env, store, policy, identity.publicUrl),
   };
+}
+
+/** The blob service for one origin, or null without an R2 binding. */
+export function blobsFor(
+  env: Env,
+  store: D1Store,
+  policy: MediatorPolicy,
+  publicUrl: string
+): BlobService | null {
+  return env.BLOBS === undefined
+    ? null
+    : new BlobService(store, new R2BlobStorage(env.BLOBS), policy, publicUrl);
 }

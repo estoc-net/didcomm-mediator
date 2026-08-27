@@ -182,6 +182,7 @@ export class InboxHub {
         store: deps.store,
         config: deps.policy,
         sessions: this.sessions,
+        blobs: deps.blobs,
         session,
         sender: unpacked.verifiedFrom,
       });

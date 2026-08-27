@@ -38,6 +38,10 @@ const purger = setInterval(async () => {
   if (purged > 0) {
     console.log(`purged ${purged} expired messages`);
   }
+  const gone = await server.purgeBlobs();
+  if (gone > 0) {
+    console.log(`purged ${gone} unheld blobs`);
+  }
 }, PURGE_INTERVAL_MS);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

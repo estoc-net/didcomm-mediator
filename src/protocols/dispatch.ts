@@ -24,6 +24,7 @@ import { FORWARD, forward } from "./routing.js";
 import { QUERIES, queries } from "./discover-features.js";
 import { PING, ping } from "./trust-ping.js";
 import { PROBLEM_REPORT } from "./problem-report.js";
+import { BLOB_DELETE, BLOB_PUT, blobDelete, blobPut } from "./blob-store.js";
 
 const HANDLERS: Record<string, Handler> = {
   [MEDIATE_REQUEST]: mediateRequest,
@@ -36,6 +37,8 @@ const HANDLERS: Record<string, Handler> = {
   [FORWARD]: forward,
   [QUERIES]: queries,
   [PING]: ping,
+  [BLOB_PUT]: blobPut,
+  [BLOB_DELETE]: blobDelete,
 };
 
 /**

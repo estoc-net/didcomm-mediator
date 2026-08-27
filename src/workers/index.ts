@@ -2,7 +2,7 @@ import type { Hono } from "hono";
 
 import { buildApp } from "../app.js";
 import type { LiveSink } from "../protocols/types.js";
-import { depsForOrigin, storeFromEnv, type Env } from "./env.js";
+import { blobsFor, depsForOrigin, policyFromEnv, storeFromEnv, type Env } from "./env.js";
 
 export { InboxHub } from "./inbox-hub.js";
 
@@ -36,7 +36,7 @@ function appFor(env: Env, origin: string): Promise<Hono> {
 }
 
 async function buildAppFor(env: Env, origin: string): Promise<Hono> {
-  const { ctx, store, policy, identity } = await depsForOrigin(env, origin);
+  const { ctx, store, policy, identity, blobs } = await depsForOrigin(env, origin);
 
   const sink: LiveSink = {
     async wantsPush(ownerDid) {
@@ -58,6 +58,7 @@ async function buildAppFor(env: Env, origin: string): Promise<Hono> {
     store,
     policy,
     sessions: sink,
+    blobs,
     publicUrl: identity.publicUrl,
     webDidDoc: identity.webDidDoc,
     log: (msg, err) => console.warn(msg, err),
@@ -74,9 +75,18 @@ export default {
   },
 
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    const purged = await storeFromEnv(env).purgeExpired();
+    const store = storeFromEnv(env);
+    const purged = await store.purgeExpired();
     if (purged > 0) {
       console.log(`purged ${purged} expired messages`);
+    }
+    // Purging blobs needs no origin: the URL is only for handing out.
+    const blobs = blobsFor(env, store, policyFromEnv(env), "");
+    if (blobs !== null) {
+      const gone = await blobs.purge();
+      if (gone > 0) {
+        console.log(`purged ${gone} unheld blobs`);
+      }
     }
   },
 };

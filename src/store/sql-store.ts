@@ -16,9 +16,11 @@
 
 import type {
   AddRecipientResult,
+  BlobInfo,
   MediationStore,
   RecipientPage,
   StoredMessage,
+  UploadGrant,
 } from "./types.js";
 
 export type SqlValue = string | number | null | Uint8Array;
@@ -75,6 +77,24 @@ const SCHEMA = [
    )`,
   "CREATE INDEX IF NOT EXISTS messages_owner ON messages(owner_did, created_at)",
   "CREATE INDEX IF NOT EXISTS messages_expiry ON messages(expires_at)",
+  `CREATE TABLE IF NOT EXISTS blobs (
+     hash        TEXT PRIMARY KEY,
+     size        INTEGER NOT NULL,
+     created_at  INTEGER NOT NULL,
+     uploaded_at INTEGER
+   )`,
+  `CREATE TABLE IF NOT EXISTS blob_holds (
+     owner_did    TEXT NOT NULL REFERENCES accounts(did) ON DELETE CASCADE,
+     hash         TEXT NOT NULL REFERENCES blobs(hash) ON DELETE CASCADE,
+     retain_until INTEGER NOT NULL,
+     PRIMARY KEY (owner_did, hash)
+   )`,
+  "CREATE INDEX IF NOT EXISTS blob_holds_hash ON blob_holds(hash)",
+  `CREATE TABLE IF NOT EXISTS blob_uploads (
+     token      TEXT PRIMARY KEY,
+     hash       TEXT NOT NULL REFERENCES blobs(hash) ON DELETE CASCADE,
+     expires_at INTEGER NOT NULL
+   )`,
   `CREATE TABLE IF NOT EXISTS identity (
      id         INTEGER PRIMARY KEY CHECK (id = 1),
      secrets    TEXT NOT NULL,
@@ -297,6 +317,122 @@ export class SqlStore implements MediationStore {
 
   async purgeExpired(): Promise<number> {
     return this.run("DELETE FROM messages WHERE expires_at <= ?", [Date.now()]);
+  }
+
+  async blobInfo(hash: string): Promise<BlobInfo | null> {
+    const row = await this.first<{
+      size: number;
+      uploaded_at: number | null;
+      retain_until: number | null;
+    }>(
+      "SELECT b.size, b.uploaded_at, " +
+        "(SELECT MAX(retain_until) FROM blob_holds h WHERE h.hash = b.hash) AS retain_until " +
+        "FROM blobs b WHERE b.hash = ?",
+      [hash]
+    );
+    if (row === null) {
+      return null;
+    }
+    return {
+      hash,
+      size: row.size,
+      uploadedAt: row.uploaded_at,
+      retainUntil: row.retain_until ?? 0,
+    };
+  }
+
+  async blobUsage(ownerDid: string): Promise<number> {
+    const row = await this.first<{ n: number | null }>(
+      "SELECT SUM(b.size) AS n FROM blob_holds h JOIN blobs b ON b.hash = h.hash " +
+        "WHERE h.owner_did = ? AND h.retain_until > ?",
+      [ownerDid, Date.now()]
+    );
+    return row?.n ?? 0;
+  }
+
+  async holdBlob(
+    ownerDid: string,
+    hash: string,
+    size: number,
+    retainUntil: number
+  ): Promise<void> {
+    await this.batch([
+      {
+        sql: "INSERT OR IGNORE INTO blobs (hash, size, created_at) VALUES (?, ?, ?)",
+        params: [hash, size, Date.now()],
+      },
+      {
+        // A hold is only ever extended, never shortened by a later put.
+        sql:
+          "INSERT INTO blob_holds (owner_did, hash, retain_until) VALUES (?, ?, ?) " +
+          "ON CONFLICT (owner_did, hash) DO UPDATE SET " +
+          "retain_until = MAX(retain_until, excluded.retain_until)",
+        params: [ownerDid, hash, retainUntil],
+      },
+    ]);
+  }
+
+  async blobHeld(ownerDid: string, hash: string): Promise<boolean> {
+    const row = await this.first(
+      "SELECT 1 AS one FROM blob_holds WHERE owner_did = ? AND hash = ? AND retain_until > ?",
+      [ownerDid, hash, Date.now()]
+    );
+    return row !== null;
+  }
+
+  async releaseBlob(ownerDid: string, hash: string): Promise<void> {
+    await this.run("DELETE FROM blob_holds WHERE owner_did = ? AND hash = ?", [
+      ownerDid,
+      hash,
+    ]);
+  }
+
+  async grantUpload(hash: string, expiresAt: number): Promise<string> {
+    const token = crypto.randomUUID();
+    await this.run(
+      "INSERT INTO blob_uploads (token, hash, expires_at) VALUES (?, ?, ?)",
+      [token, hash, expiresAt]
+    );
+    return token;
+  }
+
+  async claimUpload(token: string): Promise<UploadGrant | null> {
+    const [found] = await this.batch([
+      {
+        sql:
+          "SELECT u.hash, b.size FROM blob_uploads u JOIN blobs b ON b.hash = u.hash " +
+          "WHERE u.token = ? AND u.expires_at > ?",
+        params: [token, Date.now()],
+      },
+      { sql: "DELETE FROM blob_uploads WHERE token = ?", params: [token] },
+    ]);
+    const row = (found.rows as { hash: string; size: number }[])[0];
+    return row === undefined ? null : { hash: row.hash, size: row.size };
+  }
+
+  async markUploaded(hash: string): Promise<void> {
+    await this.run(
+      "UPDATE blobs SET uploaded_at = ? WHERE hash = ? AND uploaded_at IS NULL",
+      [Date.now(), hash]
+    );
+  }
+
+  async purgeBlobs(): Promise<string[]> {
+    const now = Date.now();
+    const [, , orphans] = await this.batch([
+      { sql: "DELETE FROM blob_holds WHERE retain_until <= ?", params: [now] },
+      { sql: "DELETE FROM blob_uploads WHERE expires_at <= ?", params: [now] },
+      {
+        sql:
+          "SELECT hash FROM blobs b WHERE NOT EXISTS " +
+          "(SELECT 1 FROM blob_holds h WHERE h.hash = b.hash)",
+      },
+    ]);
+    const hashes = (orphans.rows as { hash: string }[]).map((row) => row.hash);
+    await this.batch(
+      hashes.map((hash) => ({ sql: "DELETE FROM blobs WHERE hash = ?", params: [hash] }))
+    );
+    return hashes;
   }
 
   close(): void {

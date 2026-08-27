@@ -1,11 +1,12 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 
+import type { BlobService } from "./blobs/service.js";
 import type { MediatorPolicy } from "./config.js";
 import type { DIDCommContext } from "./didcomm/didcomm.js";
 import { buildInvitation, invitationUrl } from "./oob.js";
 import { dispatch } from "./protocols/dispatch.js";
-import { SUPPORTED_PROTOCOLS } from "./protocols/discover-features.js";
+import { supportedProtocols } from "./protocols/discover-features.js";
 import type { LiveSink } from "./protocols/types.js";
 import type { MediationStore } from "./store/types.js";
 
@@ -21,6 +22,8 @@ export interface AppDeps {
   store: MediationStore;
   policy: MediatorPolicy;
   sessions: LiveSink;
+  /** blob-store/1.0; absent, the mediator keeps no blobs and says so. */
+  blobs?: BlobService | null;
   /** The public base URL the OOB invitation URL is built on. */
   publicUrl: string;
   /** The document served at the did:web paths; null unless the identity is did:web. */
@@ -62,6 +65,7 @@ export function buildApp({
   store,
   policy,
   sessions,
+  blobs = null,
   publicUrl,
   webDidDoc = null,
   log = () => {},
@@ -76,7 +80,9 @@ export function buildApp({
       "*",
       cors({
         origin: policy.corsOrigin === true ? "*" : policy.corsOrigin,
-        allowMethods: ["GET", "POST", "OPTIONS"],
+        allowMethods: ["GET", "HEAD", "PUT", "POST", "OPTIONS"],
+        allowHeaders: ["Content-Type", "Range"],
+        exposeHeaders: ["Content-Range", "Accept-Ranges", "Content-Length"],
       })
     );
   }
@@ -115,6 +121,7 @@ export function buildApp({
         store,
         config: policy,
         sessions,
+        blobs,
         session: null,
         sender: unpacked.verifiedFrom,
       });
@@ -134,9 +141,11 @@ export function buildApp({
     // Every name this mediator answers to; `did` is the advertised one.
     dids: ctx.dids,
     invitationUrl: oobUrl,
-    protocols: SUPPORTED_PROTOCOLS,
+    protocols: supportedProtocols(blobs !== null),
     // The wire ceiling, so a client can size an envelope before sending it.
     maxMessageBytes: policy.maxMessageBytes,
+    // blob-store/1.0 limits, when blobs are kept at all.
+    ...(blobs === null ? {} : { blobs: blobs.limits() }),
   });
 
   // Plain GET / answers humans and probes; an Upgrade request falls through
@@ -172,6 +181,23 @@ export function buildApp({
         c.body(body, 200, { "content-type": "application/did+ld+json" })
       );
     }
+  }
+
+  // blob-store/1.0's HTTP side: the bytes. GET/HEAD to anyone who has the
+  // URL (the content is ciphertext and the key went by DIDComm); PUT only
+  // under a one-time token a put-result handed out. Without blobs the
+  // routes are simply not there.
+  if (blobs !== null) {
+    app.on(["GET", "HEAD"], "/b/:hash", (c) =>
+      blobs.serve(c.req.param("hash"), c.req.header("range") ?? null, c.req.method === "HEAD")
+    );
+    app.put("/b/:hash", (c) => {
+      const token = c.req.query("token");
+      if (token === undefined) {
+        return c.text("no such upload", 404);
+      }
+      return blobs.upload(c.req.param("hash"), token, c.req.raw);
+    });
   }
 
   app.get("/health", (c) => c.json({ status: "ok" }));
