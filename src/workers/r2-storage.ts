@@ -1,4 +1,4 @@
-import { blobDigest, hex } from "../blobs/hash.js";
+import { BLOB_ID_PATTERN, blobDigest, hex } from "../blobs/hash.js";
 import {
   blobHeaders,
   parseRange,
@@ -8,7 +8,7 @@ import {
 
 /**
  * The Workers target's blob storage: an R2 bucket, one object per blob under
- * its name. R2 checks the sha-256 itself on put (`sha256` option) and
+ * its id. R2 checks the sha-256 itself on put (`sha256` option) and
  * refuses a mismatch, so the Worker streams the body through without
  * buffering; the declared size travels as a fixed-length stream so R2
  * knows the length up front.
@@ -17,18 +17,19 @@ export class R2BlobStorage implements BlobStorage {
   constructor(private bucket: R2Bucket) {}
 
   async put(
+    id: string,
     hash: string,
     size: number,
     body: ReadableStream<Uint8Array>
   ): Promise<"stored" | "mismatch"> {
     const expected = blobDigest(hash);
-    if (expected === null) {
+    if (expected === null || !BLOB_ID_PATTERN.test(id)) {
       return "mismatch";
     }
     const fixed = new FixedLengthStream(size);
     const piping = body.pipeTo(fixed.writable).catch(() => {});
     try {
-      await this.bucket.put(hash, fixed.readable, { sha256: hex(expected) });
+      await this.bucket.put(id, fixed.readable, { sha256: hex(expected) });
     } catch {
       await piping;
       return "mismatch";
@@ -37,11 +38,11 @@ export class R2BlobStorage implements BlobStorage {
     return "stored";
   }
 
-  async get(hash: string, range: string | null, head: boolean): Promise<Response | null> {
-    if (blobDigest(hash) === null) {
+  async get(id: string, range: string | null, head: boolean): Promise<Response | null> {
+    if (!BLOB_ID_PATTERN.test(id)) {
       return null;
     }
-    const meta = await this.bucket.head(hash);
+    const meta = await this.bucket.head(id);
     if (meta === null) {
       return null;
     }
@@ -54,7 +55,7 @@ export class R2BlobStorage implements BlobStorage {
       if (head) {
         return new Response(null, { status: 200, headers: blobHeaders(size) });
       }
-      const object = await this.bucket.get(hash);
+      const object = await this.bucket.get(id);
       return object === null
         ? null
         : new Response(object.body, { status: 200, headers: blobHeaders(size) });
@@ -67,13 +68,16 @@ export class R2BlobStorage implements BlobStorage {
     if (head) {
       return new Response(null, { status: 206, headers });
     }
-    const object = await this.bucket.get(hash, {
+    const object = await this.bucket.get(id, {
       range: { offset: wanted.start, length },
     });
     return object === null ? null : new Response(object.body, { status: 206, headers });
   }
 
-  async delete(hash: string): Promise<void> {
-    await this.bucket.delete(hash);
+  async delete(id: string): Promise<void> {
+    if (!BLOB_ID_PATTERN.test(id)) {
+      return;
+    }
+    await this.bucket.delete(id);
   }
 }

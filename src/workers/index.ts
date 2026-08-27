@@ -85,7 +85,7 @@ export default {
     if (blobs !== null) {
       const gone = await blobs.purge();
       if (gone > 0) {
-        console.log(`purged ${gone} unheld blobs`);
+        console.log(`purged ${gone} expired blobs`);
       }
     }
   },

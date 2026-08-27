@@ -1,13 +1,20 @@
 /**
- * Blob names: a sha2-256 multihash in multibase base32 lower — the string
- * `b` + base32(0x12 0x20 <32-byte digest>), 56 characters. The same string
- * an object-share package carries as `data.hash`. Decoded and re-encoded
- * here by hand: it is one fixed shape, not worth a multiformats dependency.
+ * Two strings name a blob, for two purposes. The **hash** — a sha2-256
+ * multihash in multibase base32 lower, `b` + base32(0x12 0x20 <32-byte
+ * digest>), 56 characters, the same string an object-share package carries
+ * as `data.hash` — is what the bytes are checked against on the way in.
+ * The **id** — 20 random bytes, base32 lower, 32 characters — is where they
+ * are served: `/b/<id>`. The id says nothing about the bytes or who put
+ * them, and two mediations putting the same hash get two ids. Both are
+ * decoded and encoded here by hand: fixed shapes, not worth a multiformats
+ * dependency.
  */
 
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 const SHA256_PREFIX = [0x12, 0x20];
 export const BLOB_NAME_PATTERN = /^b[a-z2-7]{55}$/;
+export const BLOB_ID_PATTERN = /^[a-z2-7]{32}$/;
+const ID_BYTES = 20;
 
 function base32(bytes: Uint8Array): string {
   let out = "";
@@ -44,6 +51,11 @@ function unbase32(text: string): Uint8Array {
     }
   }
   return Uint8Array.from(out);
+}
+
+/** A fresh blob id: 20 random bytes as base32. */
+export function mintBlobId(): string {
+  return base32(crypto.getRandomValues(new Uint8Array(ID_BYTES)));
 }
 
 /** The blob name for a sha-256 digest. */

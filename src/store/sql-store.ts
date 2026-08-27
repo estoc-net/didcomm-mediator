@@ -16,7 +16,7 @@
 
 import type {
   AddRecipientResult,
-  BlobInfo,
+  BlobRow,
   MediationStore,
   RecipientPage,
   StoredMessage,
@@ -77,22 +77,22 @@ const SCHEMA = [
    )`,
   "CREATE INDEX IF NOT EXISTS messages_owner ON messages(owner_did, created_at)",
   "CREATE INDEX IF NOT EXISTS messages_expiry ON messages(expires_at)",
+  // owner_did deliberately has no foreign key: a blob must outlive its
+  // account's row long enough for purge to learn its id and delete the bytes.
   `CREATE TABLE IF NOT EXISTS blobs (
-     hash        TEXT PRIMARY KEY,
-     size        INTEGER NOT NULL,
-     created_at  INTEGER NOT NULL,
-     uploaded_at INTEGER
-   )`,
-  `CREATE TABLE IF NOT EXISTS blob_holds (
-     owner_did    TEXT NOT NULL REFERENCES accounts(did) ON DELETE CASCADE,
-     hash         TEXT NOT NULL REFERENCES blobs(hash) ON DELETE CASCADE,
+     id           TEXT PRIMARY KEY,
+     owner_did    TEXT NOT NULL,
+     hash         TEXT NOT NULL,
+     size         INTEGER NOT NULL,
+     created_at   INTEGER NOT NULL,
+     uploaded_at  INTEGER,
      retain_until INTEGER NOT NULL,
-     PRIMARY KEY (owner_did, hash)
+     UNIQUE (owner_did, hash)
    )`,
-  "CREATE INDEX IF NOT EXISTS blob_holds_hash ON blob_holds(hash)",
+  "CREATE INDEX IF NOT EXISTS blobs_expiry ON blobs(retain_until)",
   `CREATE TABLE IF NOT EXISTS blob_uploads (
      token      TEXT PRIMARY KEY,
-     hash       TEXT NOT NULL REFERENCES blobs(hash) ON DELETE CASCADE,
+     blob_id    TEXT NOT NULL REFERENCES blobs(id) ON DELETE CASCADE,
      expires_at INTEGER NOT NULL
    )`,
   `CREATE TABLE IF NOT EXISTS identity (
@@ -120,13 +120,38 @@ export class SqlStore implements MediationStore {
   private init(): Promise<void> {
     if (this.ready === null) {
       this.ready = this.ensure
-        ? this.driver.batch(SCHEMA.map((sql) => ({ sql }))).then(() => {})
+        ? this.dropOldBlobTables().then(() =>
+            this.driver.batch(SCHEMA.map((sql) => ({ sql }))).then(() => {})
+          )
         : Promise.resolve();
       this.ready.catch(() => {
         this.ready = null;
       });
     }
     return this.ready;
+  }
+
+  /**
+   * The first blob-store schema (2026-08-26/27) keyed blobs by hash with a
+   * `blob_holds` table shared between mediations. Blobs are temporary by
+   * design, so a database still carrying that shape is simply reset: the
+   * three tables go and are recreated. Their bytes in storage are not
+   * reachable from here and are the operator's to sweep.
+   */
+  private async dropOldBlobTables(): Promise<void> {
+    const [found] = await this.driver.batch([
+      {
+        sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'blobs'",
+      },
+    ]);
+    const row = (found.rows as { sql: string }[])[0];
+    if (row !== undefined && !row.sql.includes("owner_did")) {
+      await this.driver.batch(
+        ["blob_uploads", "blob_holds", "blobs"].map((table) => ({
+          sql: `DROP TABLE IF EXISTS ${table}`,
+        }))
+      );
+    }
   }
 
   private async batch(statements: SqlStatement[]): Promise<SqlResult[]> {
@@ -319,79 +344,74 @@ export class SqlStore implements MediationStore {
     return this.run("DELETE FROM messages WHERE expires_at <= ?", [Date.now()]);
   }
 
-  async blobInfo(hash: string): Promise<BlobInfo | null> {
-    const row = await this.first<{
-      size: number;
-      uploaded_at: number | null;
-      retain_until: number | null;
-    }>(
-      "SELECT b.size, b.uploaded_at, " +
-        "(SELECT MAX(retain_until) FROM blob_holds h WHERE h.hash = b.hash) AS retain_until " +
-        "FROM blobs b WHERE b.hash = ?",
-      [hash]
-    );
-    if (row === null) {
-      return null;
-    }
+  private static readonly BLOB_COLUMNS =
+    "id, owner_did, hash, size, uploaded_at, retain_until";
+
+  private static blobRow(row: Record<string, unknown>): BlobRow {
     return {
-      hash,
-      size: row.size,
-      uploadedAt: row.uploaded_at,
-      retainUntil: row.retain_until ?? 0,
+      id: row.id as string,
+      ownerDid: row.owner_did as string,
+      hash: row.hash as string,
+      size: row.size as number,
+      uploadedAt: row.uploaded_at as number | null,
+      retainUntil: row.retain_until as number,
     };
+  }
+
+  async blobOf(ownerDid: string, hash: string): Promise<BlobRow | null> {
+    const row = await this.first<Record<string, unknown>>(
+      `SELECT ${SqlStore.BLOB_COLUMNS} FROM blobs WHERE owner_did = ? AND hash = ?`,
+      [ownerDid, hash]
+    );
+    return row === null ? null : SqlStore.blobRow(row);
+  }
+
+  async blobById(id: string): Promise<BlobRow | null> {
+    const row = await this.first<Record<string, unknown>>(
+      `SELECT ${SqlStore.BLOB_COLUMNS} FROM blobs WHERE id = ?`,
+      [id]
+    );
+    return row === null ? null : SqlStore.blobRow(row);
   }
 
   async blobUsage(ownerDid: string): Promise<number> {
     const row = await this.first<{ n: number | null }>(
-      "SELECT SUM(b.size) AS n FROM blob_holds h JOIN blobs b ON b.hash = h.hash " +
-        "WHERE h.owner_did = ? AND h.retain_until > ?",
+      "SELECT SUM(size) AS n FROM blobs WHERE owner_did = ? AND retain_until > ?",
       [ownerDid, Date.now()]
     );
     return row?.n ?? 0;
   }
 
-  async holdBlob(
+  async keepBlob(
+    id: string,
     ownerDid: string,
     hash: string,
     size: number,
     retainUntil: number
   ): Promise<void> {
-    await this.batch([
-      {
-        sql: "INSERT OR IGNORE INTO blobs (hash, size, created_at) VALUES (?, ?, ?)",
-        params: [hash, size, Date.now()],
-      },
-      {
-        // A hold is only ever extended, never shortened by a later put.
-        sql:
-          "INSERT INTO blob_holds (owner_did, hash, retain_until) VALUES (?, ?, ?) " +
-          "ON CONFLICT (owner_did, hash) DO UPDATE SET " +
-          "retain_until = MAX(retain_until, excluded.retain_until)",
-        params: [ownerDid, hash, retainUntil],
-      },
-    ]);
-  }
-
-  async blobHeld(ownerDid: string, hash: string): Promise<boolean> {
-    const row = await this.first(
-      "SELECT 1 AS one FROM blob_holds WHERE owner_did = ? AND hash = ? AND retain_until > ?",
-      [ownerDid, hash, Date.now()]
+    await this.run(
+      "INSERT INTO blobs (id, owner_did, hash, size, created_at, retain_until) " +
+        "VALUES (?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT (owner_did, hash) DO UPDATE SET " +
+        "retain_until = MAX(retain_until, excluded.retain_until)",
+      [id, ownerDid, hash, size, Date.now(), retainUntil]
     );
-    return row !== null;
   }
 
-  async releaseBlob(ownerDid: string, hash: string): Promise<void> {
-    await this.run("DELETE FROM blob_holds WHERE owner_did = ? AND hash = ?", [
-      ownerDid,
-      hash,
+  async dropBlob(ownerDid: string, hash: string): Promise<string | null> {
+    const [found] = await this.batch([
+      { sql: "SELECT id FROM blobs WHERE owner_did = ? AND hash = ?", params: [ownerDid, hash] },
+      { sql: "DELETE FROM blobs WHERE owner_did = ? AND hash = ?", params: [ownerDid, hash] },
     ]);
+    const row = (found.rows as { id: string }[])[0];
+    return row === undefined ? null : row.id;
   }
 
-  async grantUpload(hash: string, expiresAt: number): Promise<string> {
+  async grantUpload(id: string, expiresAt: number): Promise<string> {
     const token = crypto.randomUUID();
     await this.run(
-      "INSERT INTO blob_uploads (token, hash, expires_at) VALUES (?, ?, ?)",
-      [token, hash, expiresAt]
+      "INSERT INTO blob_uploads (token, blob_id, expires_at) VALUES (?, ?, ?)",
+      [token, id, expiresAt]
     );
     return token;
   }
@@ -400,39 +420,33 @@ export class SqlStore implements MediationStore {
     const [found] = await this.batch([
       {
         sql:
-          "SELECT u.hash, b.size FROM blob_uploads u JOIN blobs b ON b.hash = u.hash " +
+          "SELECT b.id, b.hash, b.size FROM blob_uploads u JOIN blobs b ON b.id = u.blob_id " +
           "WHERE u.token = ? AND u.expires_at > ?",
         params: [token, Date.now()],
       },
       { sql: "DELETE FROM blob_uploads WHERE token = ?", params: [token] },
     ]);
-    const row = (found.rows as { hash: string; size: number }[])[0];
-    return row === undefined ? null : { hash: row.hash, size: row.size };
+    const row = (found.rows as { id: string; hash: string; size: number }[])[0];
+    return row === undefined ? null : { id: row.id, hash: row.hash, size: row.size };
   }
 
-  async markUploaded(hash: string): Promise<void> {
-    await this.run(
-      "UPDATE blobs SET uploaded_at = ? WHERE hash = ? AND uploaded_at IS NULL",
-      [Date.now(), hash]
-    );
+  async markUploaded(id: string): Promise<void> {
+    await this.run("UPDATE blobs SET uploaded_at = ? WHERE id = ? AND uploaded_at IS NULL", [
+      Date.now(),
+      id,
+    ]);
   }
 
   async purgeBlobs(): Promise<string[]> {
     const now = Date.now();
-    const [, , orphans] = await this.batch([
-      { sql: "DELETE FROM blob_holds WHERE retain_until <= ?", params: [now] },
+    const dead =
+      "retain_until <= ? OR owner_did NOT IN (SELECT did FROM accounts)";
+    const [found] = await this.batch([
+      { sql: `SELECT id FROM blobs WHERE ${dead}`, params: [now] },
+      { sql: `DELETE FROM blobs WHERE ${dead}`, params: [now] },
       { sql: "DELETE FROM blob_uploads WHERE expires_at <= ?", params: [now] },
-      {
-        sql:
-          "SELECT hash FROM blobs b WHERE NOT EXISTS " +
-          "(SELECT 1 FROM blob_holds h WHERE h.hash = b.hash)",
-      },
     ]);
-    const hashes = (orphans.rows as { hash: string }[]).map((row) => row.hash);
-    await this.batch(
-      hashes.map((hash) => ({ sql: "DELETE FROM blobs WHERE hash = ?", params: [hash] }))
-    );
-    return hashes;
+    return (found.rows as { id: string }[]).map((row) => row.id);
   }
 
   close(): void {

@@ -27,7 +27,7 @@ export interface MediatorServer {
   /** Resolves to the actual bound port (useful with port 0). */
   listen(): Promise<number>;
   close(): Promise<void>;
-  /** Drops blobs nobody holds any more; 0 when blobs are off. */
+  /** Drops blobs past their retention or without a mediation; 0 when blobs are off. */
   purgeBlobs(): Promise<number>;
 }
 

@@ -1,24 +1,25 @@
 /**
- * Where blob bytes live. The store's database knows the names, sizes, holds
- * and retentions; this is only the bytes under a name. Two backends: a
+ * Where blob bytes live. The store's database knows the owners, hashes,
+ * sizes and retentions; this is only the bytes under an id. Two backends: a
  * directory on Node, an R2 bucket on Workers.
  *
- * `put` is the one place bytes are checked against their name: it consumes
- * the whole body, and stores it only if it is exactly `size` bytes hashing
- * to `hash`. Anything else leaves nothing behind.
+ * `put` is the one place bytes are checked against their hash: it consumes
+ * the whole body, and stores it under `id` only if it is exactly `size`
+ * bytes hashing to `hash`. Anything else leaves nothing behind.
  */
 export interface BlobStorage {
   put(
+    id: string,
     hash: string,
     size: number,
     body: ReadableStream<Uint8Array>
   ): Promise<"stored" | "mismatch">;
   /**
    * The bytes as an HTTP response — 200 or, given a Range header, 206 /
-   * 416 — or null when the name is not stored. `head` asks for headers only.
+   * 416 — or null when the id is not stored. `head` asks for headers only.
    */
-  get(hash: string, range: string | null, head: boolean): Promise<Response | null>;
-  delete(hash: string): Promise<void>;
+  get(id: string, range: string | null, head: boolean): Promise<Response | null>;
+  delete(id: string): Promise<void>;
 }
 
 /** One satisfiable `bytes=` range (inclusive end), or null for the whole thing. */

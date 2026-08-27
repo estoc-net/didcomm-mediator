@@ -143,9 +143,9 @@ requires an authcrypt envelope, and the proven sender DID *is* the account.
 | `MEDIATOR_MAX_MESSAGE_BYTES` | `1048576` (1 MiB) | Largest envelope accepted on the wire; larger gets HTTP 413 (dropped on a socket). Advertised as `maxMessageBytes` in `GET /` |
 | `MEDIATOR_ABUSE_EMAIL` | unset | Abuse contact shown in the invitation page's footer |
 | `MEDIATOR_BLOB_DIR` | `<data dir>/blobs` (Node only) | Where blob-store/1.0 keeps blob bytes; `off` disables blobs. On Workers, blobs are on iff an R2 bucket is bound as `BLOBS` |
-| `MEDIATOR_BLOB_RETAIN_SECONDS` | 30 days | How long one `put` keeps a blob; a repeat `put` renews |
+| `MEDIATOR_BLOB_RETAIN_SECONDS` | 30 days | How long one `put` keeps a blob; a repeat `put` by the same mediation renews |
 | `MEDIATOR_BLOB_MAX_BYTES` | `104857600` (100 MiB) | Largest blob accepted (the upload is one PUT through the mediator) |
-| `MEDIATOR_BLOB_QUOTA_BYTES` | `1073741824` (1 GiB) | Bytes one mediation may hold at once |
+| `MEDIATOR_BLOB_QUOTA_BYTES` | `1073741824` (1 GiB) | Bytes one mediation may hold at once (its own blobs; nothing is shared between mediations) |
 
 ## Development
 

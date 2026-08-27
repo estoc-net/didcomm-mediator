@@ -40,7 +40,7 @@ const purger = setInterval(async () => {
   }
   const gone = await server.purgeBlobs();
   if (gone > 0) {
-    console.log(`purged ${gone} unheld blobs`);
+    console.log(`purged ${gone} expired blobs`);
   }
 }, PURGE_INTERVAL_MS);
 

@@ -4,8 +4,8 @@ import type { HandlerContext, Reply } from "./types.js";
 
 /**
  * blob-store/1.0 — estoc `docs/blob-store.md`: an agent asks its own
- * mediator to keep (`put`) or drop (`delete`) a blob named by hash. The
- * bytes go over HTTP (`/b/<hash>`, `src/blobs/service.ts`); these messages
+ * mediator to keep (`put`) or delete (`delete`) a blob named by hash. The
+ * bytes go over HTTP (`/b/<id>`, `src/blobs/service.ts`); these messages
  * only say what should exist. Both need a proven sender holding a mediation
  * here — this is a mediation service, not a public one.
  */
@@ -70,7 +70,7 @@ export async function blobDelete(
   if (blobs === null) {
     return refused("this mediator does not store blobs");
   }
-  const hash = await blobs.release(sender, incoming.message.body.hash);
+  const hash = await blobs.remove(sender, incoming.message.body.hash);
   if (hash === null) {
     return refused("hash is not a blob name");
   }

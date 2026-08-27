@@ -183,20 +183,20 @@ export function buildApp({
     }
   }
 
-  // blob-store/1.0's HTTP side: the bytes. GET/HEAD to anyone who has the
-  // URL (the content is ciphertext and the key went by DIDComm); PUT only
-  // under a one-time token a put-result handed out. Without blobs the
-  // routes are simply not there.
+  // blob-store/1.0's HTTP side: the bytes, under a random id. GET/HEAD to
+  // anyone who has the URL (the content is ciphertext and the key went by
+  // DIDComm); PUT only under a one-time token a put-result handed out.
+  // Without blobs the routes are simply not there.
   if (blobs !== null) {
-    app.on(["GET", "HEAD"], "/b/:hash", (c) =>
-      blobs.serve(c.req.param("hash"), c.req.header("range") ?? null, c.req.method === "HEAD")
+    app.on(["GET", "HEAD"], "/b/:id", (c) =>
+      blobs.serve(c.req.param("id"), c.req.header("range") ?? null, c.req.method === "HEAD")
     );
-    app.put("/b/:hash", (c) => {
+    app.put("/b/:id", (c) => {
       const token = c.req.query("token");
       if (token === undefined) {
         return c.text("no such upload", 404);
       }
-      return blobs.upload(c.req.param("hash"), token, c.req.raw);
+      return blobs.upload(c.req.param("id"), token, c.req.raw);
     });
   }
 

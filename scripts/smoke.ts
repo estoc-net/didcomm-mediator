@@ -266,6 +266,10 @@ if (blobLimits === undefined) {
     put.type === "https://estoc.dev/blob-store/1.0/put-result" && upload !== undefined,
     "blob put answered with an upload URL"
   );
+  check(
+    /\/b\/[a-z2-7]{32}$/.test(put.body.url as string) && !(put.body.url as string).includes(hash),
+    "blob URL is a random id, not the hash"
+  );
   const uploaded = await fetch(upload!.url, {
     method: "PUT",
     headers: { "content-length": String(bytes.length) },

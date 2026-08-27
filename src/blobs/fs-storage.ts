@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-import { blobDigest, bytesEqual } from "./hash.js";
+import { BLOB_ID_PATTERN, blobDigest, bytesEqual } from "./hash.js";
 import {
   blobHeaders,
   parseRange,
@@ -15,27 +15,28 @@ import {
 
 /**
  * The Node target's blob storage: one file per blob under a directory,
- * hashed while written to a temporary name and renamed into place only if
- * the bytes match. A blob file is never partially visible.
+ * named by id, hashed while written to a temporary name and renamed into
+ * place only if the bytes match. A blob file is never partially visible.
  */
 export class FsBlobStorage implements BlobStorage {
   constructor(private dir: string) {}
 
-  private path(hash: string): string {
-    return join(this.dir, hash);
+  private path(id: string): string {
+    return join(this.dir, id);
   }
 
   async put(
+    id: string,
     hash: string,
     size: number,
     body: ReadableStream<Uint8Array>
   ): Promise<"stored" | "mismatch"> {
     const expected = blobDigest(hash);
-    if (expected === null) {
+    if (expected === null || !BLOB_ID_PATTERN.test(id)) {
       return "mismatch";
     }
     await mkdir(this.dir, { recursive: true });
-    const temp = `${this.path(hash)}.${crypto.randomUUID()}.part`;
+    const temp = `${this.path(id)}.${crypto.randomUUID()}.part`;
     const digest = createHash("sha256");
     let seen = 0;
     let overflow = false;
@@ -61,15 +62,15 @@ export class FsBlobStorage implements BlobStorage {
       await unlink(temp).catch(() => {});
       return "mismatch";
     }
-    await rename(temp, this.path(hash));
+    await rename(temp, this.path(id));
     return "stored";
   }
 
-  async get(hash: string, range: string | null, head: boolean): Promise<Response | null> {
-    if (blobDigest(hash) === null) {
+  async get(id: string, range: string | null, head: boolean): Promise<Response | null> {
+    if (!BLOB_ID_PATTERN.test(id)) {
       return null;
     }
-    const path = this.path(hash);
+    const path = this.path(id);
     let size: number;
     try {
       size = (await stat(path)).size;
@@ -103,10 +104,10 @@ export class FsBlobStorage implements BlobStorage {
     );
   }
 
-  async delete(hash: string): Promise<void> {
-    if (blobDigest(hash) === null) {
+  async delete(id: string): Promise<void> {
+    if (!BLOB_ID_PATTERN.test(id)) {
       return;
     }
-    await unlink(this.path(hash)).catch(() => {});
+    await unlink(this.path(id)).catch(() => {});
   }
 }

@@ -25,16 +25,20 @@ export interface RecipientPage {
   remaining: number;
 }
 
-export interface BlobInfo {
+export interface BlobRow {
+  /** where the bytes are served: `/b/<id>` — random, unrelated to the hash */
+  id: string;
+  /** the mediation that put it; the only one that can delete it */
+  ownerDid: string;
   hash: string;
   size: number;
   /** When the bytes arrived and were verified; null while still expected. */
   uploadedAt: number | null;
-  /** The latest retention any mediation holds on it; 0 when nobody does. */
   retainUntil: number;
 }
 
 export interface UploadGrant {
+  id: string;
   hash: string;
   size: number;
 }
@@ -77,31 +81,33 @@ export interface MediationStore {
   purgeExpired(): Promise<number>;
 
   /*
-   * blob-store/1.0. A blob row is one set of bytes named by hash; a hold is
-   * one mediation's claim on it until a time. Bytes and names are kept by a
-   * BlobStorage; the store only knows what should exist.
+   * blob-store/1.0. A blob row is one mediation's bytes: (owner, hash) is
+   * unique, and nothing is shared between mediations — the same hash put by
+   * two of them is two rows, two ids, two uploads. Bytes are kept by a
+   * BlobStorage under the id; the store only knows what should exist.
    */
-  blobInfo(hash: string): Promise<BlobInfo | null>;
-  /** Bytes held by this mediation's live holds, uploaded or not. */
+  blobOf(ownerDid: string, hash: string): Promise<BlobRow | null>;
+  blobById(id: string): Promise<BlobRow | null>;
+  /** Bytes of this mediation's live blobs, uploaded or not. */
   blobUsage(ownerDid: string): Promise<number>;
-  /** Creates the blob row if absent and sets (or extends) the owner's hold. */
-  holdBlob(
+  /** Creates the row if absent (under `id`), else extends its retention; never shortens it. */
+  keepBlob(
+    id: string,
     ownerDid: string,
     hash: string,
     size: number,
     retainUntil: number
   ): Promise<void>;
-  /** Whether this mediation holds the blob right now (a live hold). */
-  blobHeld(ownerDid: string, hash: string): Promise<boolean>;
-  releaseBlob(ownerDid: string, hash: string): Promise<void>;
-  /** A one-time upload token for the named blob, good until `expiresAt`. */
-  grantUpload(hash: string, expiresAt: number): Promise<string>;
+  /** Removes the mediation's blob for the hash; returns its id (bytes to delete) or null if there was none. */
+  dropBlob(ownerDid: string, hash: string): Promise<string | null>;
+  /** A one-time upload token for the blob, good until `expiresAt`. */
+  grantUpload(id: string, expiresAt: number): Promise<string>;
   /** The blob a live token names, consumed on read; null if unknown or expired. */
   claimUpload(token: string): Promise<UploadGrant | null>;
-  markUploaded(hash: string): Promise<void>;
+  markUploaded(id: string): Promise<void>;
   /**
-   * Drops expired holds and every blob nobody holds any more; returns the
-   * hashes whose bytes should now be deleted from storage.
+   * Drops every blob past its retention or whose mediation has ended, and
+   * expired tokens; returns the ids whose bytes should now be deleted.
    */
   purgeBlobs(): Promise<string[]>;
 
