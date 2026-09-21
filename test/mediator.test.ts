@@ -369,7 +369,10 @@ describe("routing/2.0 + messagepickup/3.0", () => {
   it("queues a number as the same bytes over either carrier", async () => {
     const ivan = await agent("ivan-number");
     await send(ivan, "https://didcomm.org/coordinate-mediation/3.0/mediate-request", {});
-    const numbered = JSON.stringify({ ...innerMessage, extension: "N" }).replace('"N"', "333333333.33333329");
+    const numbered = JSON.stringify({ ...innerMessage, extension: "N" }).replace(
+      '"N"',
+      "[333333333.33333329,1.797693134862315708e308]"
+    );
     const id = forwardOf(ivan.did, null).id;
 
     const asJson = JSON.stringify(forwardOf(ivan.did, "ENVELOPE", { id })).replace('"ENVELOPE"', numbered);
@@ -381,8 +384,8 @@ describe("routing/2.0 + messagepickup/3.0", () => {
     expect((await post(asBase64)).status).toBe(202);
 
     const [queued] = await waiting(ivan);
-    expect(queued).toBe(canonicalize({ ...innerMessage, extension: 333333333.3333333 }));
-    expect(queued).toContain('"extension":333333333.3333333,');
+    expect(queued).toBe(canonicalize({ ...innerMessage, extension: [333333333.3333333, Number.MAX_VALUE] }));
+    expect(queued).toContain('"extension":[333333333.3333333,1.7976931348623157e+308],');
   });
 
   it("holds the canonical envelope, not only the wire one, to the size limit", async () => {
