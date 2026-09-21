@@ -54,6 +54,36 @@ export function didOf(value: string | null | undefined): string | null {
   return value ? value.split("#")[0] : null;
 }
 
+const FAILURE_KINDS = [
+  "DIDCommDIDNotResolved",
+  "DIDCommDIDUrlNotFound",
+  "DIDCommMalformed",
+  "DIDCommIoError",
+  "DIDCommInvalidState",
+  "DIDCommNoCompatibleCrypto",
+  "DIDCommUnsupported",
+  "DIDCommIllegalArgument",
+  "DIDCommSecretNotFound",
+] as const;
+
+/**
+ * A pack or unpack that failed, by kind alone. The library's own message can
+ * quote what it was reading — a header of an envelope it had already
+ * decrypted — and errors end up in logs, so neither the message nor the
+ * original error travels any further than this.
+ */
+export class DIDCommFailure extends Error {
+  readonly kind: (typeof FAILURE_KINDS)[number] | "unknown";
+
+  constructor(operation: "pack" | "unpack", err: unknown) {
+    const name = err instanceof Error ? err.name : null;
+    const kind = FAILURE_KINDS.find((known) => known === name) ?? "unknown";
+    super(`${operation} failed: ${kind}`);
+    this.name = "DIDCommFailure";
+    this.kind = kind;
+  }
+}
+
 export interface Unpacked {
   message: IMessage;
   metadata: UnpackMetadata;
@@ -113,12 +143,18 @@ export class DIDCommContext {
   }
 
   async unpack(packed: string): Promise<Unpacked> {
-    const [msg, metadata] = await Message.unpack(
-      packed,
-      this.didResolver,
-      this.secretsResolver,
-      {}
-    );
+    let msg: Message;
+    let metadata: UnpackMetadata;
+    try {
+      [msg, metadata] = await Message.unpack(
+        packed,
+        this.didResolver,
+        this.secretsResolver,
+        {}
+      );
+    } catch (err) {
+      throw new DIDCommFailure("unpack", err);
+    }
 
     const message = msg.as_value();
     return {
@@ -143,16 +179,19 @@ export class DIDCommContext {
     to: string,
     asDid: string = this.did
   ): Promise<string> {
-    const msg = new Message(message);
-    const [packed] = await msg.pack_encrypted(
-      to,
-      asDid,
-      null,
-      this.didResolver,
-      this.secretsResolver,
-      { forward: false }
-    );
-    return packed;
+    try {
+      const [packed] = await new Message(message).pack_encrypted(
+        to,
+        asDid,
+        null,
+        this.didResolver,
+        this.secretsResolver,
+        { forward: false }
+      );
+      return packed;
+    } catch (err) {
+      throw new DIDCommFailure("pack", err);
+    }
   }
 
   async resolve(did: string): Promise<DIDDoc | null> {

@@ -135,11 +135,18 @@ which — a 2xx always means queued mail:
 
 - It arrives encrypted to the mediator, names its recipient in `body.next`,
   and carries exactly one attachment holding one DIDComm encrypted message,
-  as `data.json` or as `data.base64` (never both, never `links`), with
-  non-empty `protected`, `recipients`, `iv`, `ciphertext` and `tag`. A
-  `media_type`, when given, is `application/didcomm-encrypted+json`.
-  Anything else is a **400**. The envelope is looked at, never opened.
-  One whose canonical form is over `maxMessageBytes` is a **413**.
+  as `data.json` or as `data.base64` (never both, never `links`). A
+  `media_type`, when given and not null, is
+  `application/didcomm-encrypted+json`. Anything else is a **400**.
+- The envelope is looked at, never opened. It is the General JWE JSON
+  Serialization: `protected`, `iv`, `ciphertext`, `tag` and every
+  recipient's `encrypted_key` are unpadded base64url, `protected` decodes to
+  a JSON header, and each recipient names its key in `header.kid`. `base64`
+  content is base64url (padded or not) of UTF-8 JSON in which no object
+  repeats a member name. Members the mediator does not know are kept — but
+  no JSON number anywhere in the envelope: an encrypted message has none,
+  and the mediator cannot promise to hand one back digit for digit. All of
+  these are a **400** too.
 - What is queued, and what pickup later hands over, is the envelope's
   [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) form: the same JSON
   spelled another way is the same bytes.

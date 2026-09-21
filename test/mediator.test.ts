@@ -3,6 +3,11 @@ import type { Hono } from "hono";
 import canonicalize from "canonicalize";
 import type { IMessage } from "@estoc/didcomm-node";
 
+import { CompactSign, importJWK, type JWK } from "jose";
+
+import { buildApp } from "../src/app.js";
+import { DIDCommContext } from "../src/didcomm/didcomm.js";
+import type { LiveSink } from "../src/protocols/types.js";
 import { buildServer } from "../src/server.js";
 import { mintIdentity, type MediatorIdentity } from "../src/identity-core.js";
 import {
@@ -281,6 +286,7 @@ describe("routing/2.0 + messagepickup/3.0", () => {
     const json = { media_type: ENCRYPTED, data: { json: innerMessage } };
     const base64 = Buffer.from(JSON.stringify(innerMessage)).toString("base64url");
     const { tag: _tag, ...noTag } = innerMessage;
+    const [recipient] = innerMessage.recipients as Record<string, unknown>[];
 
     const malformed: Partial<IMessage>[] = [
       { attachments: [] },
@@ -292,6 +298,37 @@ describe("routing/2.0 + messagepickup/3.0", () => {
       { attachments: [{ media_type: ENCRYPTED, data: { json: noTag } }] },
       { attachments: [{ media_type: ENCRYPTED, data: { json: { ...innerMessage, iv: "" } } }] },
       { attachments: [{ media_type: ENCRYPTED, data: { json: { ...innerMessage, recipients: [] } } }] },
+      ...[
+        { recipients: [7] },
+        { recipients: [{}] },
+        { recipients: [{ ...recipient, header: {} }] },
+        { recipients: [{ ...recipient, encrypted_key: "not a key!" }] },
+        { recipients: [recipient, null] },
+        { protected: "not a protected header" },
+        { protected: Buffer.from("[1]").toString("base64url") },
+        { protected: `${innerMessage.protected}=` },
+        { ciphertext: "not ciphertext!" },
+        { tag: "A" },
+        { aad: 7 },
+        { unprotected: "header" },
+        { extension: { count: 1 } },
+      ].map((members) => ({
+        attachments: [{ media_type: ENCRYPTED, data: { json: { ...innerMessage, ...members } } }],
+      })),
+      ...[
+        `!${base64.slice(0, 20)} % \n${base64.slice(20)}`,
+        "AAAAA",
+        Buffer.from(
+          JSON.stringify(innerMessage).replace('"ciphertext":', '"ciphertext":"Zmlyc3Q","ciphertext":')
+        ).toString("base64url"),
+        Buffer.from(
+          JSON.stringify({ ...innerMessage, extension: {} }).replace('"extension":{}', '"extension":{"a":"x","\\u0061":"x"}')
+        ).toString("base64url"),
+        Buffer.from(
+          JSON.stringify({ ...innerMessage, extension: "N" }).replace('"N"', "333333333.33333329")
+        ).toString("base64url"),
+        Buffer.concat([Buffer.from(JSON.stringify(innerMessage)), Buffer.from([0xff])]).toString("base64url"),
+      ].map((carried) => ({ attachments: [{ media_type: ENCRYPTED, data: { base64: carried } }] })),
     ];
     for (const overrides of malformed) {
       const res = await post(forwardOf(erin.did, innerMessage, overrides));
@@ -312,19 +349,22 @@ describe("routing/2.0 + messagepickup/3.0", () => {
     expect(await waiting(erin)).toEqual([canonicalize(innerMessage)]);
   });
 
-  it("holds the canonical envelope, not only the wire one, to the size limit", async () => {
-    const grown = "[" + Array(4000).fill("1e20").join(",") + "]";
-    const spelled = JSON.stringify({ ...innerMessage, padding: "PAD" }).replace('"PAD"', grown);
-    expect(spelled.length).toBeLessThan(TEST_CONFIG.maxMessageBytes / 2);
+  it("takes a base64 envelope padded or not, and members it does not know", async () => {
+    const hana = await agent("hana-padded");
+    await send(hana, "https://didcomm.org/coordinate-mediation/3.0/mediate-request", {});
+    const extended = { ...innerMessage, extension: { note: "kept", flags: [true, null] } };
+    const text = JSON.stringify(extended);
+    const padded = Buffer.from(text + " ".repeat((3 - (text.length % 3)) % 3 + 1)).toString("base64");
+    expect(padded.endsWith("=")).toBe(true);
 
-    const res = await post(
-      forwardOf(alice.did, null, {
-        attachments: [
-          { media_type: ENCRYPTED, data: { base64: Buffer.from(spelled).toString("base64url") } },
-        ],
-      })
-    );
-    expect(res.status).toBe(413);
+    const id = forwardOf(hana.did, null).id;
+    for (const carried of [padded.replaceAll("+", "-").replaceAll("/", "_"), Buffer.from(text).toString("base64url")]) {
+      const res = await post(
+        forwardOf(hana.did, null, { id, attachments: [{ media_type: ENCRYPTED, data: { base64: carried } }] })
+      );
+      expect(res.status).toBe(202);
+    }
+    expect(await waiting(hana)).toEqual([canonicalize(extended)]);
   });
 
   it("takes the stock wrapper's attachment, which names no media type", async () => {
@@ -335,6 +375,11 @@ describe("routing/2.0 + messagepickup/3.0", () => {
       forwardOf(frank.did, null, { attachments: [{ data: { json: innerMessage } }] })
     );
     expect(res.status).toBe(202);
+
+    const nulled = forwardOf(frank.did, null, {
+      attachments: [{ media_type: null, data: { json: innerMessage } } as never],
+    });
+    expect((await postPacked(await sealRaw(JSON.stringify(nulled), mediator))).status).toBe(202);
   });
 
   it("refuses a forward that did not arrive encrypted", async () => {
@@ -406,6 +451,89 @@ describe("routing/2.0 + messagepickup/3.0", () => {
     expect(reply?.body.code).toBe("e.m.live-mode-not-supported");
   });
 });
+
+describe("a forward's side effects", () => {
+  let notes: unknown[][];
+  const noted = (...note: unknown[]) => void notes.push(note);
+
+  beforeAll(() => {
+    notes = [];
+  });
+
+  it("logs a refused envelope by kind, never in the library's words", async () => {
+    const secret = "PRIVATE-FORWARD-HEADER";
+    const signer = alice.identity.secrets.find((s) => s.privateKeyJwk?.crv === "Ed25519");
+    const fromPrior = await new CompactSign(
+      new TextEncoder().encode(JSON.stringify({ iss: alice.did, sub: mediator.did, iat: secret }))
+    )
+      .setProtectedHeader({ alg: "EdDSA", typ: "JWT", kid: signer!.id })
+      .sign(await importJWK(signer!.privateKeyJwk as JWK, "EdDSA"));
+    const logged = buildServer({
+      identity: mediator,
+      store: memoryStore(),
+      config: TEST_CONFIG,
+      log: noted,
+    }).app;
+
+    const forward = forwardOf(alice.did, await sealed(alice, "unread"), { from_prior: fromPrior });
+    const res = await logged.request("/", {
+      method: "POST",
+      headers: { "content-type": ENCRYPTED },
+      body: await sealRaw(JSON.stringify(forward), mediator),
+    });
+
+    expect(res.status).toBe(400);
+    expect(notes).toHaveLength(1);
+    const [, err] = notes[0] as [string, Error & { cause?: unknown }];
+    expect(err.message).toBe("unpack failed: DIDCommMalformed");
+    expect(err.cause).toBeUndefined();
+    expect(`${err.stack} ${JSON.stringify(err, Object.getOwnPropertyNames(err))}`).not.toContain(secret);
+  });
+
+  it("answers for the queue, not for the push that follows it", async () => {
+    class Unsealing extends DIDCommContext {
+      override async packEncrypted(): Promise<string> {
+        throw new Error("no delivery today");
+      }
+    }
+    const failing: [string, DIDCommContext, LiveSink][] = [
+      ["asking", plainContext(), { wantsPush: () => Promise.reject(new Error("hub away")), push: () => {} }],
+      ["sealing", new Unsealing(mediator.did, mediator.didDoc, mediator.secrets), { wantsPush: () => true, push: () => {} }],
+      ["pushing", plainContext(), { wantsPush: () => true, push: () => Promise.reject(new Error("socket gone")) }],
+    ];
+
+    for (const [step, ctx, sessions] of failing) {
+      notes = [];
+      const store = memoryStore();
+      await store.grantMediation(alice.did);
+      const app = buildApp({
+        ctx,
+        store,
+        policy: TEST_CONFIG,
+        sessions,
+        publicUrl: TEST_CONFIG.publicUrl,
+        log: noted,
+      });
+      const inner = await sealed(alice, `queued although ${step} failed`);
+
+      const res = await app.request("/", {
+        method: "POST",
+        headers: { "content-type": ENCRYPTED },
+        body: await packAnonymous(forwardOf(alice.did, inner), mediator.did),
+      });
+
+      expect(res.status, step).toBe(202);
+      expect((await store.messagesFor(alice.did, 10)).map((m) => m.packed), step).toEqual([
+        canonicalize(inner),
+      ]);
+      expect(notes, step).toEqual([["live delivery push failed; the message stays queued", undefined]]);
+    }
+  });
+});
+
+function plainContext(): DIDCommContext {
+  return new DIDCommContext(mediator.did, mediator.didDoc, mediator.secrets);
+}
 
 describe("supporting protocols", () => {
   it("answers trust-ping on the ping's thread", async () => {

@@ -1,6 +1,9 @@
+import { parse, traverse } from "@humanwhocodes/momoa";
+import type { AnyNode, MemberNode, StringNode } from "@humanwhocodes/momoa";
 import canonicalize from "canonicalize";
+import { decodeProtectedHeader } from "jose";
 
-import { didOf } from "../didcomm/didcomm.js";
+import { DIDCommFailure, didOf } from "../didcomm/didcomm.js";
 import type { Unpacked } from "../didcomm/didcomm.js";
 import type { HandlerContext, Reply } from "./types.js";
 import { pushLiveDelivery } from "./pickup.js";
@@ -41,14 +44,14 @@ export const ENCRYPTED_MEDIA_TYPE = "application/didcomm-encrypted+json";
 
 /**
  * Why a forward was not queued, as the HTTP status its sender sees. Malformed
- * (400) and oversized (413) are judged on the forward alone. Everything that
- * depends on who holds mail here — no such recipient, a full queue, a key
- * already holding other bytes — is one answer (422), so the status says
- * little about any account. The message never quotes the forward.
+ * (400) is judged on the forward alone. Everything that depends on who holds
+ * mail here — no such recipient, a full queue, a key already holding other
+ * bytes — is one answer (422), so the status says little about any account.
+ * The message never quotes the forward.
  */
 export class ForwardRefused extends Error {
   constructor(
-    readonly status: 400 | 413 | 422,
+    readonly status: 400 | 422,
     message: string
   ) {
     super(message);
@@ -57,7 +60,95 @@ export class ForwardRefused extends Error {
 
 const malformed = (what: string) => new ForwardRefused(400, `The forward ${what}`);
 
-const JWE_MEMBERS = ["protected", "iv", "ciphertext", "tag"];
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** base64url as JOSE writes it (RFC 7515 §2): that alphabet only, no padding. */
+const isBase64url = (value: unknown): value is string =>
+  typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value) && value.length % 4 !== 1;
+
+/**
+ * JSON text as a value, refusing a member name that comes twice: JSON.parse
+ * would quietly keep the last one, and RFC 8785 has no canonical form for an
+ * object that was never unambiguous.
+ */
+function parseUnambiguous(text: string): unknown {
+  traverse(parse(text, { mode: "json" }), {
+    enter(node) {
+      const { type, members } = node as AnyNode & { members?: MemberNode[] };
+      if (type !== "Object" || members === undefined) {
+        return;
+      }
+      const names = new Set(members.map(({ name }) => (name as StringNode).value));
+      if (names.size !== members.length) {
+        throw new SyntaxError("duplicate member name");
+      }
+    },
+  });
+  return JSON.parse(text);
+}
+
+/** An attachment's `base64`, decoded; senders differ on padding, so either way. */
+function carriedText(base64: string): string {
+  const unpadded = base64.length % 4 === 0 ? base64.replace(/={1,2}$/, "") : base64;
+  if (!isBase64url(unpadded)) {
+    throw new SyntaxError("not base64url");
+  }
+  return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(unpadded, "base64url"));
+}
+
+/**
+ * No member of an encrypted message is a number, and one in an extension
+ * cannot be kept faithfully: a `data.json` envelope reaches this code already
+ * parsed by the DIDComm library, whose decimal conversion is not exact, so the
+ * same digits could become different bytes depending on how they were carried.
+ */
+function holdsNumber(value: unknown): boolean {
+  if (typeof value === "number" || typeof value === "bigint") {
+    return true;
+  }
+  return typeof value === "object" && value !== null && Object.values(value).some(holdsNumber);
+}
+
+/**
+ * The General JWE JSON Serialization (RFC 7516 §7.2.1) as DIDComm uses it,
+ * by shape alone: every recipient names a key and carries a wrapped one, the
+ * binary members are base64url, and `protected` decodes to a header. Which
+ * algorithms the header names is the recipient's business, and members this
+ * does not know are left alone.
+ */
+function isEncryptedMessage(envelope: unknown): envelope is Record<string, unknown> {
+  if (!isObject(envelope)) {
+    return false;
+  }
+  const { recipients, aad, unprotected } = envelope;
+  if (
+    !["protected", "iv", "ciphertext", "tag"].every((name) => isBase64url(envelope[name])) ||
+    (aad !== undefined && !isBase64url(aad)) ||
+    (unprotected !== undefined && !isObject(unprotected)) ||
+    !Array.isArray(recipients) ||
+    recipients.length === 0
+  ) {
+    return false;
+  }
+  const addressed = recipients.every(
+    (recipient: unknown) =>
+      isObject(recipient) &&
+      isBase64url(recipient.encrypted_key) &&
+      isObject(recipient.header) &&
+      typeof recipient.header.kid === "string" &&
+      recipient.header.kid !== ""
+  );
+  if (!addressed) {
+    return false;
+  }
+  try {
+    decodeProtectedHeader({ protected: envelope.protected });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The one envelope a forward carries, as the bytes that are queued and later
@@ -90,35 +181,23 @@ function envelopeOf(incoming: Unpacked): string {
 
   let envelope: unknown;
   try {
-    envelope = asJson
-      ? data.json
-      : JSON.parse(
-          new TextDecoder("utf-8", { fatal: true }).decode(
-            Buffer.from(data.base64 as string, "base64url")
-          )
-        );
+    envelope = asJson ? data.json : parseUnambiguous(carriedText(data.base64 as string));
   } catch {
     throw malformed("attachment does not decode to JSON");
   }
 
-  if (typeof envelope !== "object" || envelope === null || Array.isArray(envelope)) {
-    throw malformed("attachment is not an encrypted message");
-  }
-  const members = envelope as Record<string, unknown>;
-  const recipients = members.recipients;
-  if (
-    !JWE_MEMBERS.every((name) => typeof members[name] === "string" && members[name] !== "") ||
-    !Array.isArray(recipients) ||
-    recipients.length === 0
-  ) {
-    throw malformed("attachment is not an encrypted message");
-  }
-
+  let canonical: string | undefined;
   try {
-    return canonicalize(envelope) as string;
+    if (isEncryptedMessage(envelope) && !holdsNumber(envelope)) {
+      canonical = canonicalize(envelope);
+    }
   } catch {
-    throw malformed("attachment has no canonical form");
+    // Nested past what the stack walks, or a value with no canonical form.
   }
+  if (canonical === undefined) {
+    throw malformed("attachment is not an encrypted message");
+  }
+  return canonical;
 }
 
 export async function forward(
@@ -138,13 +217,7 @@ export async function forward(
     throw malformed("names no recipient");
   }
 
-  // The wire limit does not settle this: a number written `1e20` is three
-  // bytes on the wire and twenty-one in canonical form.
   const packed = envelopeOf(incoming);
-  const limit = context.config.maxMessageBytes;
-  if (new TextEncoder().encode(packed).byteLength > limit) {
-    throw new ForwardRefused(413, `Envelope exceeds ${limit} bytes`);
-  }
 
   const notQueued = () => new ForwardRefused(422, "The forward was not queued");
   const owner = await ownerFor(next, context);
@@ -164,14 +237,23 @@ export async function forward(
     throw notQueued();
   }
 
-  // The push introduces itself as the DID the forward was addressed to — the
-  // routing DID the recipient's grant handed out, so the name they expect.
-  await pushLiveDelivery(
-    context.ctx,
-    context.sessions,
-    owner,
-    [stored.message],
-    context.ctx.asOwnDid(incoming.addressedTo)
-  );
+  // The mail is queued, and that is what the sender is told whatever becomes
+  // of the push: pickup hands it over all the same. The push introduces itself
+  // as the DID the forward was addressed to — the routing DID the recipient's
+  // grant handed out, so the name they expect.
+  try {
+    await pushLiveDelivery(
+      context.ctx,
+      context.sessions,
+      owner,
+      [stored.message],
+      context.ctx.asOwnDid(incoming.addressedTo)
+    );
+  } catch (err) {
+    context.log?.(
+      "live delivery push failed; the message stays queued",
+      err instanceof DIDCommFailure ? err : undefined
+    );
+  }
   return null;
 }

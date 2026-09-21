@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Message } from "@estoc/didcomm-node";
 import type { IMessage } from "@estoc/didcomm-node";
+import canonicalize from "canonicalize";
 import WebSocket from "ws";
 
 import { DIDCommContext } from "../src/didcomm/didcomm.js";
@@ -33,15 +34,7 @@ function check(condition: boolean, label: string): void {
 }
 
 /** didcomm-rust re-serializes JSON with sorted keys, so compare unordered. */
-function sameJson(a: unknown, b: unknown): boolean {
-  const canonical = (value: unknown): string =>
-    JSON.stringify(value, (_key, v: unknown) =>
-      v !== null && typeof v === "object" && !Array.isArray(v)
-        ? Object.fromEntries(Object.entries(v).sort(([x], [y]) => (x < y ? -1 : 1)))
-        : v
-    );
-  return canonical(a) === canonical(b);
-}
+const sameJson = (a: unknown, b: unknown): boolean => canonicalize(a) === canonicalize(b);
 
 const { did: mediatorDid, invitationUrl, blobs: blobLimits } = (await (
   await fetch(base)

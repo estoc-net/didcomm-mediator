@@ -46,6 +46,11 @@ export interface HandlerContext {
   session: Session | null;
   /** The DID proven by the envelope (authcrypt or signature); null if anonymous. */
   sender: string | null;
+  /**
+   * Where a handler notes a failure that does not change its answer. What is
+   * passed must never quote a message.
+   */
+  log?: (msg: string, err?: unknown) => void;
 }
 
 /**

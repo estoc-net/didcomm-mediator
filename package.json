@@ -21,11 +21,13 @@
     "@estoc/didcomm-node": "^0.4.1-estoc.3",
     "@hono/node-server": "^1.19.17",
     "@hono/node-ws": "^1.3.1",
+    "@humanwhocodes/momoa": "^3.3.13",
     "better-sqlite3": "^11.8.1",
     "bs58": "^6.0.0",
     "canonicalize": "^5.1.0",
     "did-resolver": "^4.1.0",
     "hono": "^4.13.1",
+    "jose": "^6.2.12",
     "web-did-resolver": "^2.0.27"
   },
   "devDependencies": {
@@ -33,7 +35,6 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.13.5",
     "@types/ws": "^8.5.14",
-    "jose": "^6.2.12",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.7",

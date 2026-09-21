@@ -201,7 +201,6 @@ export class SqlStore implements MediationStore {
     return rows[0] ?? null;
   }
 
-  /** Runs one statement; returns its changes count. */
   private async run(sql: string, params: SqlValue[] = []): Promise<number> {
     const [result] = await this.batch([{ sql, params }]);
     return result.changes;

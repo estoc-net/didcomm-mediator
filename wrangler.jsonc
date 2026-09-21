@@ -63,9 +63,9 @@
           "database_id": "e57679e6-e700-46e9-abbf-a9b529a5a67d"
         }
       ],
-      // blob-store/1.0 (estoc docs/blob-store.md): encrypted packages agents
-      // put here for contacts to download. Optional — without the binding
-      // the mediator keeps no blobs — so it is not in the one-click deploy;
+      // blob-store/1.0: encrypted packages agents put here for contacts to
+      // download. Optional — without the binding the mediator keeps no
+      // blobs — so it is not in the one-click deploy;
       // `wrangler r2 bucket create didcomm-mediator-blobs` before deploying.
       "r2_buckets": [
         { "binding": "BLOBS", "bucket_name": "didcomm-mediator-blobs" }
