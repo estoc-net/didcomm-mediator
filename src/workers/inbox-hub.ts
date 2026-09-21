@@ -185,6 +185,7 @@ export class InboxHub {
         blobs: deps.blobs,
         session,
         sender: unpacked.verifiedFrom,
+        log: (message, error) => console.warn(message, error),
       });
 
       if (packed !== null) {

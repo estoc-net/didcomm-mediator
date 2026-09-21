@@ -311,7 +311,6 @@ describe("routing/2.0 + messagepickup/3.0", () => {
         { tag: "A" },
         { aad: 7 },
         { unprotected: "header" },
-        { extension: { count: 1 } },
       ].map((members) => ({
         attachments: [{ media_type: ENCRYPTED, data: { json: { ...innerMessage, ...members } } }],
       })),
@@ -324,9 +323,9 @@ describe("routing/2.0 + messagepickup/3.0", () => {
         Buffer.from(
           JSON.stringify({ ...innerMessage, extension: {} }).replace('"extension":{}', '"extension":{"a":"x","\\u0061":"x"}')
         ).toString("base64url"),
-        Buffer.from(
-          JSON.stringify({ ...innerMessage, extension: "N" }).replace('"N"', "333333333.33333329")
-        ).toString("base64url"),
+        Buffer.from(JSON.stringify({ ...innerMessage, extension: "N" }).replace('"N"', "1e999")).toString(
+          "base64url"
+        ),
         Buffer.concat([Buffer.from(JSON.stringify(innerMessage)), Buffer.from([0xff])]).toString("base64url"),
       ].map((carried) => ({ attachments: [{ media_type: ENCRYPTED, data: { base64: carried } }] })),
     ];
@@ -347,6 +346,101 @@ describe("routing/2.0 + messagepickup/3.0", () => {
     expect(noNext.status).toBe(400);
 
     expect(await waiting(erin)).toEqual([canonicalize(innerMessage)]);
+  });
+
+  it("refuses a member name that comes twice, however the envelope is carried", async () => {
+    const gina = await agent("gina-twice");
+    await send(gina, "https://didcomm.org/coordinate-mediation/3.0/mediate-request", {});
+    const text = JSON.stringify(forwardOf(gina.did, { ...innerMessage, extension: {} }));
+    expect((await postPacked(await sealRaw(text, mediator))).status).toBe(202);
+
+    const twice = [
+      text.replace('"ciphertext":', '"ciphertext":"Zmlyc3Q","ciphertext":'),
+      text.replace('"extension":{}', '"extension":{"a":"x","\\u0061":"x"}'),
+      text.replace('"next":', '"next":"did:example:elsewhere","next":'),
+    ];
+    for (const raw of twice) {
+      expect(raw).not.toBe(text);
+      expect((await postPacked(await sealRaw(raw, mediator))).status, raw).toBe(400);
+    }
+    expect(await waiting(gina)).toHaveLength(1);
+  });
+
+  it("queues a number as the same bytes over either carrier", async () => {
+    const ivan = await agent("ivan-number");
+    await send(ivan, "https://didcomm.org/coordinate-mediation/3.0/mediate-request", {});
+    const numbered = JSON.stringify({ ...innerMessage, extension: "N" }).replace('"N"', "333333333.33333329");
+    const id = forwardOf(ivan.did, null).id;
+
+    const asJson = JSON.stringify(forwardOf(ivan.did, "ENVELOPE", { id })).replace('"ENVELOPE"', numbered);
+    expect((await postPacked(await sealRaw(asJson, mediator))).status).toBe(202);
+    const asBase64 = forwardOf(ivan.did, null, {
+      id,
+      attachments: [{ media_type: ENCRYPTED, data: { base64: Buffer.from(numbered).toString("base64url") } }],
+    });
+    expect((await post(asBase64)).status).toBe(202);
+
+    const [queued] = await waiting(ivan);
+    expect(queued).toBe(canonicalize({ ...innerMessage, extension: 333333333.3333333 }));
+    expect(queued).toContain('"extension":333333333.3333333,');
+  });
+
+  it("holds the canonical envelope, not only the wire one, to the size limit", async () => {
+    const grown = "[" + Array(4000).fill("1e20").join(",") + "]";
+    const spelled = JSON.stringify({ ...innerMessage, padding: "PAD" }).replace('"PAD"', grown);
+    expect(spelled.length).toBeLessThan(TEST_CONFIG.maxMessageBytes / 2);
+
+    const res = await post(
+      forwardOf(alice.did, null, {
+        attachments: [
+          { media_type: ENCRYPTED, data: { base64: Buffer.from(spelled).toString("base64url") } },
+        ],
+      })
+    );
+    expect(res.status).toBe(413);
+  });
+
+  it("refuses headers that do not add up to one JOSE header, and asks nothing of the algorithms", async () => {
+    const judy = await agent("judy-headers");
+    await send(judy, "https://didcomm.org/coordinate-mediation/3.0/mediate-request", {});
+    const header = JSON.parse(Buffer.from(innerMessage.protected as string, "base64url").toString());
+    const withProtected = (value: unknown) => ({
+      ...innerMessage,
+      protected: Buffer.from(JSON.stringify(value)).toString("base64url"),
+    });
+    const [recipient] = innerMessage.recipients as { header: Record<string, unknown> }[];
+    const carriers = (envelope: unknown) => [
+      { json: envelope },
+      { base64: Buffer.from(JSON.stringify(envelope)).toString("base64url") },
+    ];
+
+    const refused = [
+      withProtected({}),
+      withProtected({ ...header, alg: null, enc: [] }),
+      withProtected({ ...header, enc: "" }),
+      withProtected({ ...header, epk: "not a key" }),
+      withProtected({ ...header, apv: 7 }),
+      { ...innerMessage, unprotected: { enc: header.enc } },
+      { ...innerMessage, recipients: [{ ...recipient, header: { ...recipient.header, alg: header.alg } }] },
+    ];
+    for (const envelope of refused) {
+      for (const data of carriers(envelope)) {
+        const res = await post(forwardOf(judy.did, null, { attachments: [{ media_type: ENCRYPTED, data }] }));
+        expect(res.status, `case ${refused.indexOf(envelope)}`).toBe(400);
+      }
+    }
+
+    const { alg: _alg, ...unnamed } = header;
+    const spread = {
+      ...withProtected({ ...unnamed, enc: "FUTURE-ENC" }),
+      unprotected: { note: "shared" },
+      recipients: [{ ...recipient, header: { ...recipient.header, alg: "FUTURE-KW" } }],
+    };
+    for (const data of carriers(spread)) {
+      const res = await post(forwardOf(judy.did, null, { attachments: [{ media_type: ENCRYPTED, data }] }));
+      expect(res.status).toBe(202);
+    }
+    expect(await waiting(judy)).toEqual([canonicalize(spread), canonicalize(spread)]);
   });
 
   it("takes a base64 envelope padded or not, and members it does not know", async () => {

@@ -122,6 +122,7 @@ export function buildServer({
               blobs,
               session,
               sender: unpacked.verifiedFrom,
+              log,
             });
 
             if (packed !== null) {

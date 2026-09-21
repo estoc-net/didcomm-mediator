@@ -86,6 +86,13 @@ export class DIDCommFailure extends Error {
 
 export interface Unpacked {
   message: IMessage;
+  /**
+   * The plaintext as its sender wrote it. `message` is the library's reading
+   * of it, in which a member name that came twice has already become its last
+   * value and a number may have moved; whoever must answer for the JSON text
+   * itself parses this.
+   */
+  plaintext: string;
   metadata: UnpackMetadata;
   /** The DID the plaintext claims sent it. */
   from: string | null;
@@ -145,8 +152,9 @@ export class DIDCommContext {
   async unpack(packed: string): Promise<Unpacked> {
     let msg: Message;
     let metadata: UnpackMetadata;
+    let plaintext: string;
     try {
-      [msg, metadata] = await Message.unpack(
+      [msg, metadata, plaintext] = await Message.unpack(
         packed,
         this.didResolver,
         this.secretsResolver,
@@ -159,6 +167,7 @@ export class DIDCommContext {
     const message = msg.as_value();
     return {
       message,
+      plaintext,
       metadata,
       from: message.from ?? null,
       verifiedFrom: didOf(metadata.encrypted_from_kid ?? metadata.sign_from),

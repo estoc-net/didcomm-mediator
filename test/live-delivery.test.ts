@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 
+import { DIDCommContext } from "../src/didcomm/didcomm.js";
 import { buildServer, type MediatorServer } from "../src/server.js";
 import { mintIdentity, type MediatorIdentity } from "../src/identity-core.js";
 import {
@@ -24,6 +25,7 @@ let server: MediatorServer;
 let mediator: MediatorIdentity;
 let alice: TestAgent;
 let baseUrl: string;
+const notes: unknown[][] = [];
 
 beforeAll(async () => {
   mediator = await mintIdentity(TEST_CONFIG.publicUrl, "peer2");
@@ -32,6 +34,7 @@ beforeAll(async () => {
     identity: mediator,
     store: memoryStore(),
     config: TEST_CONFIG,
+    log: (...note) => void notes.push(note),
   });
   const port = await server.listen();
   baseUrl = `127.0.0.1:${port}`;
@@ -138,5 +141,35 @@ describe("live delivery over WebSocket", () => {
     );
 
     ws.close();
+  });
+
+  it("notes a push that failed for a forward that came over a socket, and keeps the mail", async () => {
+    const listening = new WebSocket(`ws://${baseUrl}/`);
+    const sending = new WebSocket(`ws://${baseUrl}/`);
+    for (const ws of [listening, sending]) {
+      await new Promise((resolve, reject) => {
+        ws.once("open", resolve);
+        ws.once("error", reject);
+      });
+    }
+    await request(listening, alice, "https://didcomm.org/messagepickup/3.0/live-delivery-change", {
+      live_delivery: true,
+    });
+
+    const forward = await packAnonymous(forwardOf(alice.did, await sealed(alice, "kept")), mediator.did);
+    const sealing = vi
+      .spyOn(DIDCommContext.prototype, "packEncrypted")
+      .mockRejectedValueOnce(new Error("no delivery today"));
+    notes.length = 0;
+    sending.send(forward);
+    await vi.waitFor(() => expect(notes).toHaveLength(1));
+    sealing.mockRestore();
+
+    expect(notes).toEqual([["live delivery push failed; the message stays queued", undefined]]);
+    const count = await request(listening, alice, "https://didcomm.org/messagepickup/3.0/status-request", {});
+    expect(count.body.message_count).toBe(1);
+
+    listening.close();
+    sending.close();
   });
 });

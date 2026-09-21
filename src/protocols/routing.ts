@@ -44,14 +44,15 @@ export const ENCRYPTED_MEDIA_TYPE = "application/didcomm-encrypted+json";
 
 /**
  * Why a forward was not queued, as the HTTP status its sender sees. Malformed
- * (400) is judged on the forward alone. Everything that depends on who holds
- * mail here — no such recipient, a full queue, a key already holding other
- * bytes — is one answer (422), so the status says little about any account.
- * The message never quotes the forward.
+ * (400) and oversized (413) are judged on the forward alone. Everything that
+ * depends on who holds mail here — no such recipient, a full queue, a key
+ * already holding other bytes — is one answer (422), which keeps those three
+ * apart from nobody; an accepted forward still tells its sender that `next`
+ * takes mail here right now. The message never quotes the forward.
  */
 export class ForwardRefused extends Error {
   constructor(
-    readonly status: 400 | 422,
+    readonly status: 400 | 413 | 422,
     message: string
   ) {
     super(message);
@@ -97,57 +98,63 @@ function carriedText(base64: string): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(unpadded, "base64url"));
 }
 
+const isName = (value: unknown): value is string => typeof value === "string" && value !== "";
+
 /**
- * No member of an encrypted message is a number, and one in an extension
- * cannot be kept faithfully: a `data.json` envelope reaches this code already
- * parsed by the DIDComm library, whose decimal conversion is not exact, so the
- * same digits could become different bytes depending on how they were carried.
+ * The JOSE header one recipient ends up with (RFC 7516 §7.2.1): the protected,
+ * shared and per-recipient headers may not repeat a name between them, and
+ * together they must name how the key was wrapped and the content encrypted
+ * (§4.1.1, §4.1.2). Key agreement parameters are held to their JSON type and
+ * no further: which algorithms these are is the recipient's business, and one
+ * this mediator has never heard of is as welcome as any.
  */
-function holdsNumber(value: unknown): boolean {
-  if (typeof value === "number" || typeof value === "bigint") {
-    return true;
-  }
-  return typeof value === "object" && value !== null && Object.values(value).some(holdsNumber);
+function isJoseHeader(parts: Record<string, unknown>[]): boolean {
+  const names = parts.flatMap(Object.keys);
+  const header = Object.fromEntries(parts.flatMap(Object.entries));
+  return (
+    new Set(names).size === names.length &&
+    isName(header.alg) &&
+    isName(header.enc) &&
+    (header.epk === undefined || isObject(header.epk)) &&
+    ["apu", "apv", "skid"].every((name) => header[name] === undefined || typeof header[name] === "string")
+  );
 }
 
 /**
  * The General JWE JSON Serialization (RFC 7516 §7.2.1) as DIDComm uses it,
  * by shape alone: every recipient names a key and carries a wrapped one, the
- * binary members are base64url, and `protected` decodes to a header. Which
- * algorithms the header names is the recipient's business, and members this
- * does not know are left alone.
+ * binary members are base64url, and each recipient's headers add up to one
+ * JOSE header. `protected` is read, never rewritten: it is authenticated as
+ * the string it came as. Members this does not know are left alone.
  */
 function isEncryptedMessage(envelope: unknown): envelope is Record<string, unknown> {
   if (!isObject(envelope)) {
     return false;
   }
-  const { recipients, aad, unprotected } = envelope;
+  const { recipients, aad, unprotected = {} } = envelope;
   if (
     !["protected", "iv", "ciphertext", "tag"].every((name) => isBase64url(envelope[name])) ||
     (aad !== undefined && !isBase64url(aad)) ||
-    (unprotected !== undefined && !isObject(unprotected)) ||
+    !isObject(unprotected) ||
     !Array.isArray(recipients) ||
     recipients.length === 0
   ) {
     return false;
   }
-  const addressed = recipients.every(
+  let protectedHeader: Record<string, unknown>;
+  try {
+    protectedHeader = decodeProtectedHeader({ protected: envelope.protected }) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  return recipients.every(
     (recipient: unknown) =>
       isObject(recipient) &&
       isBase64url(recipient.encrypted_key) &&
       isObject(recipient.header) &&
-      typeof recipient.header.kid === "string" &&
-      recipient.header.kid !== ""
+      isName(recipient.header.kid) &&
+      isJoseHeader([protectedHeader, unprotected, recipient.header])
   );
-  if (!addressed) {
-    return false;
-  }
-  try {
-    decodeProtectedHeader({ protected: envelope.protected });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -157,8 +164,17 @@ function isEncryptedMessage(envelope: unknown): envelope is Record<string, unkno
  * a links attachment is refused too, since a mediator that fetches URLs on an
  * anonymous sender's say-so is a proxy.
  */
-function envelopeOf(incoming: Unpacked): string {
-  const attachments = incoming.message.attachments ?? [];
+function envelopeOf(incoming: Unpacked, limit: number): string {
+  // Read from the sender's text, not the library's message: there a name that
+  // came twice is already one value and a number may have moved, so the same
+  // envelope could be queued as different bytes depending on how it was carried.
+  let written: unknown;
+  try {
+    written = parseUnambiguous(incoming.plaintext);
+  } catch {
+    throw malformed("is not unambiguous JSON");
+  }
+  const attachments = isObject(written) && Array.isArray(written.attachments) ? written.attachments : [];
   if (attachments.length !== 1) {
     throw malformed("must carry exactly one attachment");
   }
@@ -166,9 +182,8 @@ function envelopeOf(incoming: Unpacked): string {
   // didcomm-rust's own forward wrapper leaves the media type out, so only an
   // attachment that claims to be something else is turned away; what it
   // holds is checked below either way.
-  const [attachment] = attachments;
-  const mediaType = attachment.media_type ?? ENCRYPTED_MEDIA_TYPE;
-  if (mediaType !== ENCRYPTED_MEDIA_TYPE) {
+  const [attachment] = attachments as Record<string, unknown>[];
+  if ((attachment.media_type ?? ENCRYPTED_MEDIA_TYPE) !== ENCRYPTED_MEDIA_TYPE) {
     throw malformed(`attachment must be ${ENCRYPTED_MEDIA_TYPE}`);
   }
 
@@ -188,14 +203,20 @@ function envelopeOf(incoming: Unpacked): string {
 
   let canonical: string | undefined;
   try {
-    if (isEncryptedMessage(envelope) && !holdsNumber(envelope)) {
+    if (isEncryptedMessage(envelope)) {
       canonical = canonicalize(envelope);
     }
   } catch {
-    // Nested past what the stack walks, or a value with no canonical form.
+    // Nested past what the stack walks, or a number with no canonical form.
   }
   if (canonical === undefined) {
     throw malformed("attachment is not an encrypted message");
+  }
+
+  // The wire limit does not settle this: a number written `1e20` is four
+  // bytes on the wire and twenty-one in canonical form.
+  if (new TextEncoder().encode(canonical).byteLength > limit) {
+    throw new ForwardRefused(413, `Envelope exceeds ${limit} bytes`);
   }
   return canonical;
 }
@@ -217,7 +238,7 @@ export async function forward(
     throw malformed("names no recipient");
   }
 
-  const packed = envelopeOf(incoming);
+  const packed = envelopeOf(incoming, context.config.maxMessageBytes);
 
   const notQueued = () => new ForwardRefused(422, "The forward was not queued");
   const owner = await ownerFor(next, context);
