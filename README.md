@@ -128,6 +128,30 @@ Anonymous (anoncrypt) envelopes may only carry `forward` — the outer envelope
 of a forward is anonymous by design. Everything that grants or writes state
 requires an authcrypt envelope, and the proven sender DID *is* the account.
 
+### What a forward must be
+
+A forward is queued whole or not at all, and the HTTP status of the call says
+which — a 2xx always means queued mail:
+
+- It arrives encrypted to the mediator, names its recipient in `body.next`,
+  and carries exactly one attachment holding one DIDComm encrypted message,
+  as `data.json` or as `data.base64` (never both, never `links`), with
+  non-empty `protected`, `recipients`, `iv`, `ciphertext` and `tag`. A
+  `media_type`, when given, is `application/didcomm-encrypted+json`.
+  Anything else is a **400**. The envelope is looked at, never opened.
+  One whose canonical form is over `maxMessageBytes` is a **413**.
+- What is queued, and what pickup later hands over, is the envelope's
+  [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) form: the same JSON
+  spelled another way is the same bytes.
+- `(account, body.next, forward id)` names the package. The same forward
+  again is accepted and queued once; the same id with another envelope is
+  refused and the first stays. The name is free again once its mail has been
+  picked up or has expired.
+- A recipient nobody here holds, a full queue and a reused id are one answer,
+  **422**, so the status says little about any account.
+
+Over a WebSocket there is no status: a refused forward is dropped.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -139,7 +163,7 @@ requires an authcrypt envelope, and the proven sender DID *is* the account.
 | `MEDIATOR_OPEN_REGISTRATION` | `true` | Grant mediation to any DID that asks |
 | `MEDIATOR_CORS_ORIGIN` | `*` | CORS for browser agents |
 | `MEDIATOR_MESSAGE_TTL_SECONDS` | 7 days | Unclaimed messages expire |
-| `MEDIATOR_MAX_MESSAGES_PER_ACCOUNT` | `1000` | Inbox quota |
+| `MEDIATOR_MAX_MESSAGES_PER_ACCOUNT` | `1000` | Inbox quota. Advertised as `maxMessagesPerAccount` in `GET /` |
 | `MEDIATOR_MAX_MESSAGE_BYTES` | `1048576` (1 MiB) | Largest envelope accepted on the wire; larger gets HTTP 413 (dropped on a socket). Advertised as `maxMessageBytes` in `GET /` |
 | `MEDIATOR_ABUSE_EMAIL` | unset | Abuse contact shown in the invitation page's footer |
 | `MEDIATOR_BLOB_DIR` | `<data dir>/blobs` (Node only) | Where blob-store/1.0 keeps blob bytes; `off` disables blobs. On Workers, blobs are on iff an R2 bucket is bound as `BLOBS` |
@@ -174,7 +198,8 @@ npm run typecheck
   sockets in process memory, Workers keep them in a Durable Object, and the
   didcomm WASM is the same Rust either way.
 
-The DIDComm layer (pack/unpack via didcomm-node, did:peer:2/4 and did:web
+The DIDComm layer (pack/unpack via
+[@estoc/didcomm-node](https://github.com/estoc-net/didcomm-rust), did:peer:2/4 and did:web
 resolution) is shared lineage with
 [didcomm-http](https://github.com/estoc-net/didcomm-http).
 

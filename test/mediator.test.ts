@@ -1,19 +1,22 @@
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
-import type { IMessage } from "didcomm-node";
+import canonicalize from "canonicalize";
+import type { IMessage } from "@estoc/didcomm-node";
 
 import { buildServer } from "../src/server.js";
 import { mintIdentity, type MediatorIdentity } from "../src/identity-core.js";
 import {
+  ENCRYPTED,
   TEST_CONFIG,
   agent,
+  forwardOf,
   memoryStore,
   packAnonymous,
   plaintext,
+  sealRaw,
+  sealed,
   type TestAgent,
 } from "./helpers.js";
-
-const ENCRYPTED = "application/didcomm-encrypted+json";
 
 let app: Hono;
 let mediator: MediatorIdentity;
@@ -150,24 +153,34 @@ describe("coordinate-mediation/3.0", () => {
   });
 });
 
+/** POST an anonymous forward; the status is all a sender learns. */
+async function post(forward: IMessage): Promise<Response> {
+  return postPacked(await packAnonymous(forward, mediator.did));
+}
+
+function postPacked(body: string): Promise<Response> {
+  return app.request("/", { method: "POST", headers: { "content-type": ENCRYPTED }, body });
+}
+
+async function waiting(account: TestAgent): Promise<string[]> {
+  const { reply } = await send(
+    account,
+    "https://didcomm.org/messagepickup/3.0/delivery-request",
+    { limit: 10 }
+  );
+  const attachments = (reply?.attachments ?? []) as { data: { base64: string } }[];
+  return attachments.map((a) => Buffer.from(a.data.base64, "base64url").toString("utf8"));
+}
+
 describe("routing/2.0 + messagepickup/3.0", () => {
-  const innerMessage = { fake: "packed envelope for alice" };
+  let innerMessage: Record<string, unknown>;
+
+  beforeAll(async () => {
+    innerMessage = await sealed(alice, "for alice");
+  });
 
   it("accepts an anonymous forward for a bound recipient", async () => {
-    const packed = await packAnonymous(
-      plaintext("https://didcomm.org/routing/2.0/forward", {
-        next: "did:example:alias-1",
-      }, {
-        attachments: [{ data: { json: innerMessage } }],
-      }),
-      mediator.did
-    );
-
-    const res = await app.request("/", {
-      method: "POST",
-      headers: { "content-type": ENCRYPTED },
-      body: packed,
-    });
+    const res = await post(forwardOf("did:example:alias-1", innerMessage));
     expect(res.status).toBe(202);
   });
 
@@ -219,23 +232,132 @@ describe("routing/2.0 + messagepickup/3.0", () => {
     expect(reply?.body.message_count).toBe(0);
   });
 
-  it("drops a forward for an unknown recipient without an answer", async () => {
-    const packed = await packAnonymous(
-      plaintext("https://didcomm.org/routing/2.0/forward", {
-        next: "did:example:nobody",
-      }, {
-        attachments: [{ data: { json: { x: 1 } } }],
-      }),
-      mediator.did
+  it("hands over the envelope's canonical bytes, however the forward spelled it", async () => {
+    const carol = await agent("carol-canonical");
+    await send(carol, "https://didcomm.org/coordinate-mediation/3.0/mediate-request", {});
+    const spaced = JSON.stringify(
+      Object.fromEntries(Object.entries(innerMessage).reverse()),
+      null,
+      2
     );
 
+    const res = await post(
+      forwardOf(carol.did, null, {
+        attachments: [
+          { media_type: ENCRYPTED, data: { base64: Buffer.from(spaced).toString("base64url") } },
+        ],
+      })
+    );
+    expect(res.status).toBe(202);
+    expect(await waiting(carol)).toEqual([canonicalize(innerMessage)]);
+  });
+
+  it("takes a repeated forward once, and keeps the first bytes when the id comes back with others", async () => {
+    const dave = await agent("dave-retry");
+    await send(dave, "https://didcomm.org/coordinate-mediation/3.0/mediate-request", {});
+    const first = forwardOf(dave.did, innerMessage);
+    const respelled = forwardOf(dave.did, null, {
+      id: first.id,
+      attachments: [
+        {
+          media_type: ENCRYPTED,
+          data: { base64: Buffer.from(JSON.stringify(innerMessage, null, 1)).toString("base64url") },
+        },
+      ],
+    });
+    const other = forwardOf(dave.did, await sealed(dave, "something else"), { id: first.id });
+
+    expect((await post(first)).status).toBe(202);
+    expect((await post(first)).status).toBe(202);
+    expect((await post(respelled)).status).toBe(202);
+    expect((await post(other)).status).toBe(422);
+
+    expect(await waiting(dave)).toEqual([canonicalize(innerMessage)]);
+  });
+
+  it("refuses a forward that is not one envelope, and queues none of them", async () => {
+    const erin = await agent("erin-malformed");
+    await send(erin, "https://didcomm.org/coordinate-mediation/3.0/mediate-request", {});
+    const json = { media_type: ENCRYPTED, data: { json: innerMessage } };
+    const base64 = Buffer.from(JSON.stringify(innerMessage)).toString("base64url");
+    const { tag: _tag, ...noTag } = innerMessage;
+
+    const malformed: Partial<IMessage>[] = [
+      { attachments: [] },
+      { attachments: [json, json] },
+      { attachments: [{ ...json, media_type: "application/json" }] },
+      { attachments: [{ media_type: ENCRYPTED, data: { links: ["https://example.test/e"], hash: "x" } }] },
+      { attachments: [{ media_type: ENCRYPTED, data: { base64: "bm90IGpzb24" } }] },
+      { attachments: [{ media_type: ENCRYPTED, data: { json: [innerMessage] } }] },
+      { attachments: [{ media_type: ENCRYPTED, data: { json: noTag } }] },
+      { attachments: [{ media_type: ENCRYPTED, data: { json: { ...innerMessage, iv: "" } } }] },
+      { attachments: [{ media_type: ENCRYPTED, data: { json: { ...innerMessage, recipients: [] } } }] },
+    ];
+    for (const overrides of malformed) {
+      const res = await post(forwardOf(erin.did, innerMessage, overrides));
+      expect(res.status, `case ${malformed.indexOf(overrides)}`).toBe(400);
+    }
+
+    // No packer builds an attachment holding its content twice over.
+    for (const data of [{ json: innerMessage, base64 }, { json: innerMessage, links: [] }]) {
+      const forward = forwardOf(erin.did, null, { attachments: [{ media_type: ENCRYPTED, data } as never] });
+      expect((await postPacked(await sealRaw(JSON.stringify(forward), mediator))).status).toBe(400);
+    }
+    const handSealed = await sealRaw(JSON.stringify(forwardOf(erin.did, innerMessage)), mediator);
+    expect((await postPacked(handSealed)).status).toBe(202);
+
+    const noNext = await post({ ...forwardOf(erin.did, innerMessage), body: {} });
+    expect(noNext.status).toBe(400);
+
+    expect(await waiting(erin)).toEqual([canonicalize(innerMessage)]);
+  });
+
+  it("holds the canonical envelope, not only the wire one, to the size limit", async () => {
+    const grown = "[" + Array(4000).fill("1e20").join(",") + "]";
+    const spelled = JSON.stringify({ ...innerMessage, padding: "PAD" }).replace('"PAD"', grown);
+    expect(spelled.length).toBeLessThan(TEST_CONFIG.maxMessageBytes / 2);
+
+    const res = await post(
+      forwardOf(alice.did, null, {
+        attachments: [
+          { media_type: ENCRYPTED, data: { base64: Buffer.from(spelled).toString("base64url") } },
+        ],
+      })
+    );
+    expect(res.status).toBe(413);
+  });
+
+  it("takes the stock wrapper's attachment, which names no media type", async () => {
+    const frank = await agent("frank-stock");
+    await send(frank, "https://didcomm.org/coordinate-mediation/3.0/mediate-request", {});
+
+    const res = await post(
+      forwardOf(frank.did, null, { attachments: [{ data: { json: innerMessage } }] })
+    );
+    expect(res.status).toBe(202);
+  });
+
+  it("refuses a forward that did not arrive encrypted", async () => {
     const res = await app.request("/", {
       method: "POST",
-      headers: { "content-type": ENCRYPTED },
-      body: packed,
+      headers: { "content-type": "application/didcomm-plain+json" },
+      body: JSON.stringify(forwardOf(alice.did, innerMessage)),
     });
-    expect(res.status).toBe(202);
-    expect(await res.text()).toBe("");
+    expect(res.status).toBe(400);
+  });
+
+  it("refuses what it does not queue with one answer: nobody by that name, or a full queue", async () => {
+    const unknown = await post(forwardOf("did:example:nobody", innerMessage));
+    expect(unknown.status).toBe(422);
+
+    const gina = await agent("gina-full");
+    await send(gina, "https://didcomm.org/coordinate-mediation/3.0/mediate-request", {});
+    for (let i = 0; i < TEST_CONFIG.maxMessagesPerAccount; i++) {
+      expect((await post(forwardOf(gina.did, innerMessage))).status).toBe(202);
+    }
+    const full = await post(forwardOf(gina.did, innerMessage));
+    expect(full.status).toBe(422);
+    expect(await full.json()).toEqual(await unknown.json());
   });
 
   it("delivers to a registered account DID over any squatted binding", async () => {
@@ -254,19 +376,7 @@ describe("routing/2.0 + messagepickup/3.0", () => {
       {}
     );
 
-    const packed = await packAnonymous(
-      plaintext("https://didcomm.org/routing/2.0/forward", {
-        next: carol.did,
-      }, {
-        attachments: [{ data: { json: { for: "carol" } } }],
-      }),
-      mediator.did
-    );
-    await app.request("/", {
-      method: "POST",
-      headers: { "content-type": ENCRYPTED },
-      body: packed,
-    });
+    expect((await post(forwardOf(carol.did, await sealed(carol, "for carol")))).status).toBe(202);
 
     const carolStatus = await send(
       carol,

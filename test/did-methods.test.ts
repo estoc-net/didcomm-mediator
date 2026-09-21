@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { IMessage } from "didcomm-node";
+import type { IMessage } from "@estoc/didcomm-node";
 
 import { DIDCommContext } from "../src/didcomm/didcomm.js";
 import {

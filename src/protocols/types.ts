@@ -1,4 +1,4 @@
-import type { IMessage } from "didcomm-node";
+import type { IMessage } from "@estoc/didcomm-node";
 
 import type { BlobService } from "../blobs/service.js";
 import type { MediatorPolicy } from "../config.js";

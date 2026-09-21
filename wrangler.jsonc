@@ -20,7 +20,7 @@
   // The didcomm-node WASM build is Node-only; on workerd the bundler build
   // stands in through a small instantiation shim (same API, same wasm).
   "alias": {
-    "didcomm-node": "./src/workers/didcomm-wasm.ts"
+    "@estoc/didcomm-node": "./src/workers/didcomm-wasm.ts"
   },
   "durable_objects": {
     "bindings": [{ "name": "INBOX", "class_name": "InboxHub" }]

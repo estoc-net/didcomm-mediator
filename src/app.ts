@@ -7,6 +7,7 @@ import type { DIDCommContext } from "./didcomm/didcomm.js";
 import { buildInvitation, invitationUrl } from "./oob.js";
 import { dispatch } from "./protocols/dispatch.js";
 import { supportedProtocols } from "./protocols/discover-features.js";
+import { ForwardRefused } from "./protocols/routing.js";
 import type { LiveSink } from "./protocols/types.js";
 import type { MediationStore } from "./store/types.js";
 
@@ -127,6 +128,9 @@ export function buildApp({
       });
     } catch (err) {
       log("envelope refused", err);
+      if (err instanceof ForwardRefused) {
+        return c.json({ error: err.message }, err.status);
+      }
       return c.json({ error: "Message could not be unpacked" }, 400);
     }
 
@@ -144,6 +148,9 @@ export function buildApp({
     protocols: supportedProtocols(blobs !== null),
     // The wire ceiling, so a client can size an envelope before sending it.
     maxMessageBytes: policy.maxMessageBytes,
+    // How many messages one account's queue holds, and for how long.
+    maxMessagesPerAccount: policy.maxMessagesPerAccount,
+    messageTtlSeconds: policy.messageTtlSeconds,
     // blob-store/1.0 limits, when blobs are kept at all.
     ...(blobs === null ? {} : { blobs: blobs.limits() }),
   });

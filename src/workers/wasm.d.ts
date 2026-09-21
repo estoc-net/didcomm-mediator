@@ -4,9 +4,9 @@
  * declarations of its own (the package's index.d.ts describes index.js, which
  * we bypass — see didcomm-wasm.ts).
  */
-declare module "didcomm/index_bg.wasm" {
+declare module "@estoc/didcomm/index_bg.wasm" {
   const wasmModule: WebAssembly.Module;
   export default wasmModule;
 }
 
-declare module "didcomm/index_bg.js";
+declare module "@estoc/didcomm/index_bg.js";

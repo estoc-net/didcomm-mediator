@@ -1,10 +1,10 @@
-import { Message } from "didcomm-node";
+import { Message } from "@estoc/didcomm-node";
 import type {
   DIDResolver,
   IMessage,
   SecretsResolver,
   UnpackMetadata,
-} from "didcomm-node";
+} from "@estoc/didcomm-node";
 import { resolveDIDCommDoc } from "./did-resolver.js";
 import type { DIDDoc, Secret } from "@estoc/did-peer";
 import type { OwnIdentity } from "../identity-core.js";

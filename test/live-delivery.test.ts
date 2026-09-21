@@ -6,9 +6,11 @@ import { mintIdentity, type MediatorIdentity } from "../src/identity-core.js";
 import {
   TEST_CONFIG,
   agent,
+  forwardOf,
   memoryStore,
   packAnonymous,
   plaintext,
+  sealed,
   type TestAgent,
 } from "./helpers.js";
 
@@ -95,15 +97,8 @@ describe("live delivery over WebSocket", () => {
     expect(status.body.live_delivery).toBe(true);
 
     // A stranger forwards to Alice over plain HTTP while her socket is open.
-    const inner = { hello: "alice, live" };
-    const forward = await packAnonymous(
-      plaintext("https://didcomm.org/routing/2.0/forward", {
-        next: alice.did,
-      }, {
-        attachments: [{ data: { json: inner } }],
-      }),
-      mediator.did
-    );
+    const inner = await sealed(alice, "alice, live");
+    const forward = await packAnonymous(forwardOf(alice.did, inner), mediator.did);
     const pushWaiting = nextMessage(ws);
     const res = await fetch(`http://${baseUrl}/`, {
       method: "POST",

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
-import type { IMessage } from "didcomm-node";
+import type { IMessage } from "@estoc/didcomm-node";
 
 import { BLOB_ID_PATTERN, blobDigest, blobName, mintBlobId } from "../src/blobs/hash.js";
 import { buildServer } from "../src/server.js";
