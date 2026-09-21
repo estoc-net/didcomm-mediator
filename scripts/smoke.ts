@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { Message } from "didcomm-node";
-import type { IMessage } from "didcomm-node";
+import { Message } from "@estoc/didcomm-node";
+import type { IMessage } from "@estoc/didcomm-node";
+import canonicalize from "canonicalize";
 import WebSocket from "ws";
 
 import { DIDCommContext } from "../src/didcomm/didcomm.js";
@@ -33,15 +34,7 @@ function check(condition: boolean, label: string): void {
 }
 
 /** didcomm-rust re-serializes JSON with sorted keys, so compare unordered. */
-function sameJson(a: unknown, b: unknown): boolean {
-  const canonical = (value: unknown): string =>
-    JSON.stringify(value, (_key, v: unknown) =>
-      v !== null && typeof v === "object" && !Array.isArray(v)
-        ? Object.fromEntries(Object.entries(v).sort(([x], [y]) => (x < y ? -1 : 1)))
-        : v
-    );
-  return canonical(a) === canonical(b);
-}
+const sameJson = (a: unknown, b: unknown): boolean => canonicalize(a) === canonicalize(b);
 
 const { did: mediatorDid, invitationUrl, blobs: blobLimits } = (await (
   await fetch(base)
@@ -98,7 +91,26 @@ async function send(
   return message;
 }
 
-async function forwardAnonymously(next: string, inner: unknown): Promise<number> {
+const ANONYMOUS = {
+  resolver: { resolve: resolveDIDCommDoc },
+  secrets: { get_secret: async () => null, find_secrets: async () => [] },
+};
+
+/** A real envelope for Alice, as the JSON a forward carries: the mediator takes nothing else. */
+async function sealedNote(content: string): Promise<unknown> {
+  const note = new Message({
+    ...plaintext("https://example.test/note", { content }),
+    from: undefined,
+    to: [alice.did],
+    return_route: undefined,
+  } as IMessage);
+  const [packed] = await note.pack_encrypted(alice.did, null, null, ANONYMOUS.resolver, ANONYMOUS.secrets, {
+    forward: false,
+  });
+  return JSON.parse(packed);
+}
+
+async function forwardAnonymously(next: string, inner: unknown, id: string = randomUUID()): Promise<number> {
   const msg = new Message(
     plaintext("https://didcomm.org/routing/2.0/forward", { next })
   );
@@ -106,9 +118,10 @@ async function forwardAnonymously(next: string, inner: unknown): Promise<number>
   // is one-way, so it carries no return_route.
   const withAttachment = new Message({
     ...msg.as_value(),
+    id,
     from: undefined,
     return_route: undefined,
-    attachments: [{ id: randomUUID(), data: { json: inner } }],
+    attachments: [{ id: randomUUID(), media_type: ENCRYPTED, data: { json: inner } }],
   } as IMessage);
   const [packed] = await withAttachment.pack_encrypted(
     mediatorDid,
@@ -147,8 +160,15 @@ check(
   "recipient bound"
 );
 
-const inner = { smoke: "hello over http", at: Date.now() };
-check((await forwardAnonymously(alias, inner)) === 202, "anonymous forward accepted");
+const inner = await sealedNote("hello over http");
+const forwardId = randomUUID();
+check((await forwardAnonymously(alias, inner, forwardId)) === 202, "anonymous forward accepted");
+check((await forwardAnonymously(alias, inner, forwardId)) === 202, "the same forward again is accepted, and queued once");
+check(
+  (await forwardAnonymously(alias, await sealedNote("other bytes"), forwardId)) === 422,
+  "the forward's id with another envelope is refused"
+);
+check((await forwardAnonymously(alias, { not: "an envelope" })) === 400, "a forward carrying no envelope is refused");
 
 const status = await send(
   "https://didcomm.org/messagepickup/3.0/status-request",
@@ -213,7 +233,7 @@ const liveStatus = (await ctx.unpack(await statusFrame)).message;
 check(liveStatus.body.live_delivery === true, "live delivery enabled");
 
 const pushFrame = nextTextFrame("live delivery push");
-const liveInner = { smoke: "hello live", at: Date.now() };
+const liveInner = await sealedNote("hello live");
 check(
   (await forwardAnonymously(alias, liveInner)) === 202,
   "anonymous forward while socket open"

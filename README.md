@@ -128,6 +128,43 @@ Anonymous (anoncrypt) envelopes may only carry `forward` — the outer envelope
 of a forward is anonymous by design. Everything that grants or writes state
 requires an authcrypt envelope, and the proven sender DID *is* the account.
 
+### What a forward must be
+
+A forward is queued whole or not at all, and the HTTP status of the call says
+which — a 2xx always means queued mail:
+
+- It arrives encrypted to the mediator, names its recipient in `body.next`,
+  and carries exactly one attachment holding one DIDComm encrypted message,
+  as `data.json` or as `data.base64` (never both, never `links`). A
+  `media_type` left out or null says nothing and changes nothing of what
+  follows; one that is given is `application/didcomm-encrypted+json`.
+  Anything else is a **400**.
+- The envelope is looked at, never opened. It is the General JWE JSON
+  Serialization: `protected`, `iv`, `ciphertext`, `tag` and every
+  recipient's `encrypted_key` are unpadded base64url, and each recipient
+  names its key in `header.kid`. For every recipient the protected, shared
+  and per-recipient headers share no name and together give `alg` and `enc`
+  as non-empty strings; which algorithms they name is the recipient's
+  business. `base64` content is base64url (padded or not) of UTF-8 JSON. No
+  object in the forward repeats a member name, whichever way the envelope is
+  carried. Members the mediator does not know are kept. All of these are a
+  **400** too.
+- What is queued, and what pickup later hands over, is the envelope's
+  [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) form, read from the
+  sender's own JSON text: the same JSON spelled another way or carried the
+  other way is the same bytes, numbers included. That form is held to
+  `MEDIATOR_MAX_MESSAGE_BYTES` as well (a number can grow in it): **413**.
+- `(account, body.next, forward id)` names the package. The same forward
+  again is accepted and queued once; the same id with another envelope is
+  refused and the first stays. The name is free again once its mail has been
+  picked up or has expired.
+- A recipient nobody here holds, a full queue and a reused id are one answer,
+  **422**, which does not tell the three apart. A 202 does tell the sender
+  that this recipient takes mail here right now; it says nothing of the
+  recipient having received it.
+
+Over a WebSocket there is no status: a refused forward is dropped.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -139,7 +176,7 @@ requires an authcrypt envelope, and the proven sender DID *is* the account.
 | `MEDIATOR_OPEN_REGISTRATION` | `true` | Grant mediation to any DID that asks |
 | `MEDIATOR_CORS_ORIGIN` | `*` | CORS for browser agents |
 | `MEDIATOR_MESSAGE_TTL_SECONDS` | 7 days | Unclaimed messages expire |
-| `MEDIATOR_MAX_MESSAGES_PER_ACCOUNT` | `1000` | Inbox quota |
+| `MEDIATOR_MAX_MESSAGES_PER_ACCOUNT` | `1000` | Inbox quota. Advertised as `maxMessagesPerAccount` in `GET /` |
 | `MEDIATOR_MAX_MESSAGE_BYTES` | `1048576` (1 MiB) | Largest envelope accepted on the wire; larger gets HTTP 413 (dropped on a socket). Advertised as `maxMessageBytes` in `GET /` |
 | `MEDIATOR_ABUSE_EMAIL` | unset | Abuse contact shown in the invitation page's footer |
 | `MEDIATOR_BLOB_DIR` | `<data dir>/blobs` (Node only) | Where blob-store/1.0 keeps blob bytes; `off` disables blobs. On Workers, blobs are on iff an R2 bucket is bound as `BLOBS` |
@@ -174,7 +211,8 @@ npm run typecheck
   sockets in process memory, Workers keep them in a Durable Object, and the
   didcomm WASM is the same Rust either way.
 
-The DIDComm layer (pack/unpack via didcomm-node, did:peer:2/4 and did:web
+The DIDComm layer (pack/unpack via
+[@estoc/didcomm-node](https://github.com/estoc-net/didcomm-rust), did:peer:2/4 and did:web
 resolution) is shared lineage with
 [didcomm-http](https://github.com/estoc-net/didcomm-http).
 

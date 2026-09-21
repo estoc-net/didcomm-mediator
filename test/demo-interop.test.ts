@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import bs58 from "bs58";
-import { Message } from "didcomm-node";
-import type { IMessage } from "didcomm-node";
+import { Message } from "@estoc/didcomm-node";
+import type { IMessage } from "@estoc/didcomm-node";
 import WebSocket from "ws";
 
 import { buildServer, type MediatorServer } from "../src/server.js";

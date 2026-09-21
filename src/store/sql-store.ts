@@ -18,8 +18,10 @@ import type {
   AddRecipientResult,
   BlobRow,
   MediationStore,
+  PackageKey,
   RecipientPage,
   StoredMessage,
+  StoreOutcome,
   UploadGrant,
 } from "./types.js";
 
@@ -73,7 +75,9 @@ const SCHEMA = [
      owner_did  TEXT NOT NULL REFERENCES accounts(did) ON DELETE CASCADE,
      packed     TEXT NOT NULL,
      created_at INTEGER NOT NULL,
-     expires_at INTEGER NOT NULL
+     expires_at INTEGER NOT NULL,
+     next_did   TEXT,
+     forward_id TEXT
    )`,
   "CREATE INDEX IF NOT EXISTS messages_owner ON messages(owner_did, created_at)",
   "CREATE INDEX IF NOT EXISTS messages_expiry ON messages(expires_at)",
@@ -102,6 +106,16 @@ const SCHEMA = [
    )`,
 ];
 
+/*
+ * A queue created before packages had keys gains the two columns in place,
+ * its waiting rows keeping NULL in both: NULLs never collide in a unique
+ * index, so that mail stays deliverable and simply has no retry to match.
+ */
+const MESSAGE_KEY_COLUMNS = ["next_did", "forward_id"];
+const MESSAGE_KEY_INDEX =
+  "CREATE UNIQUE INDEX IF NOT EXISTS messages_package " +
+  "ON messages(owner_did, next_did, forward_id)";
+
 export class SqlStore implements MediationStore {
   private ttlMs: number;
   private maxMessages: number;
@@ -120,9 +134,9 @@ export class SqlStore implements MediationStore {
   private init(): Promise<void> {
     if (this.ready === null) {
       this.ready = this.ensure
-        ? this.dropOldBlobTables().then(() =>
-            this.driver.batch(SCHEMA.map((sql) => ({ sql }))).then(() => {})
-          )
+        ? this.dropOldBlobTables()
+            .then(() => this.driver.batch(SCHEMA.map((sql) => ({ sql }))))
+            .then(() => this.keyMessages())
         : Promise.resolve();
       this.ready.catch(() => {
         this.ready = null;
@@ -154,6 +168,21 @@ export class SqlStore implements MediationStore {
     }
   }
 
+  private async keyMessages(): Promise<void> {
+    const [found] = await this.driver.batch([
+      { sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'" },
+    ]);
+    const keyed = (found.rows as { sql: string }[])[0].sql.includes("forward_id");
+    await this.driver.batch([
+      ...(keyed
+        ? []
+        : MESSAGE_KEY_COLUMNS.map((column) => ({
+            sql: `ALTER TABLE messages ADD COLUMN ${column} TEXT`,
+          }))),
+      { sql: MESSAGE_KEY_INDEX },
+    ]);
+  }
+
   private async batch(statements: SqlStatement[]): Promise<SqlResult[]> {
     await this.init();
     if (statements.length === 0) {
@@ -172,7 +201,6 @@ export class SqlStore implements MediationStore {
     return rows[0] ?? null;
   }
 
-  /** Runs one statement; returns its changes count. */
   private async run(sql: string, params: SqlValue[] = []): Promise<number> {
     const [result] = await this.batch([{ sql, params }]);
     return result.changes;
@@ -285,23 +313,42 @@ export class SqlStore implements MediationStore {
   }
 
   /*
-   * The quota check is read-then-insert without a transaction; two writers
-   * racing can overshoot the quota by a message or two, which is a soft
-   * limit doing its job either way.
+   * One transaction: an expired holder of the key makes way, the insert
+   * happens only under the quota and only if the key is free, and whichever
+   * row then holds the key says what happened. The id is how a row this call
+   * wrote is told from one that was already there.
    */
-  async storeMessage(ownerDid: string, packed: string): Promise<string | null> {
-    if ((await this.messageCount(ownerDid)) >= this.maxMessages) {
-      return null;
-    }
-
+  async storeMessage(
+    ownerDid: string,
+    { next, forwardId }: PackageKey,
+    packed: string
+  ): Promise<StoreOutcome> {
     const id = crypto.randomUUID();
     const now = Date.now();
-    await this.run(
-      "INSERT INTO messages (id, owner_did, packed, created_at, expires_at) " +
-        "VALUES (?, ?, ?, ?, ?)",
-      [id, ownerDid, packed, now, now + this.ttlMs]
-    );
-    return id;
+    const key = [ownerDid, next, forwardId];
+    const held = "owner_did = ? AND next_did = ? AND forward_id = ?";
+
+    const [, , found] = await this.batch([
+      { sql: `DELETE FROM messages WHERE ${held} AND expires_at <= ?`, params: [...key, now] },
+      {
+        sql:
+          "INSERT INTO messages (id, owner_did, next_did, forward_id, packed, created_at, expires_at) " +
+          "SELECT ?, ?, ?, ?, ?, ?, ? " +
+          "WHERE (SELECT COUNT(*) FROM messages WHERE owner_did = ? AND expires_at > ?) < ? " +
+          "ON CONFLICT (owner_did, next_did, forward_id) DO NOTHING",
+        params: [id, ...key, packed, now, now + this.ttlMs, ownerDid, now, this.maxMessages],
+      },
+      { sql: `SELECT id, packed, created_at FROM messages WHERE ${held}`, params: key },
+    ]);
+
+    const row = (found.rows as { id: string; packed: string; created_at: number }[])[0];
+    if (row === undefined) {
+      return { outcome: "full" };
+    }
+    if (row.id === id) {
+      return { outcome: "stored", message: { id, packed, createdAt: row.created_at } };
+    }
+    return { outcome: row.packed === packed ? "repeated" : "conflict" };
   }
 
   async messageCount(ownerDid: string): Promise<number> {

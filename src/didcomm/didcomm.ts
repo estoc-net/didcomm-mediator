@@ -1,10 +1,10 @@
-import { Message } from "didcomm-node";
+import { Message } from "@estoc/didcomm-node";
 import type {
   DIDResolver,
   IMessage,
   SecretsResolver,
   UnpackMetadata,
-} from "didcomm-node";
+} from "@estoc/didcomm-node";
 import { resolveDIDCommDoc } from "./did-resolver.js";
 import type { DIDDoc, Secret } from "@estoc/did-peer";
 import type { OwnIdentity } from "../identity-core.js";
@@ -54,8 +54,45 @@ export function didOf(value: string | null | undefined): string | null {
   return value ? value.split("#")[0] : null;
 }
 
+const FAILURE_KINDS = [
+  "DIDCommDIDNotResolved",
+  "DIDCommDIDUrlNotFound",
+  "DIDCommMalformed",
+  "DIDCommIoError",
+  "DIDCommInvalidState",
+  "DIDCommNoCompatibleCrypto",
+  "DIDCommUnsupported",
+  "DIDCommIllegalArgument",
+  "DIDCommSecretNotFound",
+] as const;
+
+/**
+ * A pack or unpack that failed, by kind alone. The library's own message can
+ * quote what it was reading — a header of an envelope it had already
+ * decrypted — and errors end up in logs, so neither the message nor the
+ * original error travels any further than this.
+ */
+export class DIDCommFailure extends Error {
+  readonly kind: (typeof FAILURE_KINDS)[number] | "unknown";
+
+  constructor(operation: "pack" | "unpack", err: unknown) {
+    const name = err instanceof Error ? err.name : null;
+    const kind = FAILURE_KINDS.find((known) => known === name) ?? "unknown";
+    super(`${operation} failed: ${kind}`);
+    this.name = "DIDCommFailure";
+    this.kind = kind;
+  }
+}
+
 export interface Unpacked {
   message: IMessage;
+  /**
+   * The plaintext as its sender wrote it. `message` is the library's reading
+   * of it, in which a member name that came twice has already become its last
+   * value and a number may have moved; whoever must answer for the JSON text
+   * itself parses this.
+   */
+  plaintext: string;
   metadata: UnpackMetadata;
   /** The DID the plaintext claims sent it. */
   from: string | null;
@@ -113,16 +150,24 @@ export class DIDCommContext {
   }
 
   async unpack(packed: string): Promise<Unpacked> {
-    const [msg, metadata] = await Message.unpack(
-      packed,
-      this.didResolver,
-      this.secretsResolver,
-      {}
-    );
+    let msg: Message;
+    let metadata: UnpackMetadata;
+    let plaintext: string;
+    try {
+      [msg, metadata, plaintext] = await Message.unpack(
+        packed,
+        this.didResolver,
+        this.secretsResolver,
+        {}
+      );
+    } catch (err) {
+      throw new DIDCommFailure("unpack", err);
+    }
 
     const message = msg.as_value();
     return {
       message,
+      plaintext,
       metadata,
       from: message.from ?? null,
       verifiedFrom: didOf(metadata.encrypted_from_kid ?? metadata.sign_from),
@@ -143,16 +188,19 @@ export class DIDCommContext {
     to: string,
     asDid: string = this.did
   ): Promise<string> {
-    const msg = new Message(message);
-    const [packed] = await msg.pack_encrypted(
-      to,
-      asDid,
-      null,
-      this.didResolver,
-      this.secretsResolver,
-      { forward: false }
-    );
-    return packed;
+    try {
+      const [packed] = await new Message(message).pack_encrypted(
+        to,
+        asDid,
+        null,
+        this.didResolver,
+        this.secretsResolver,
+        { forward: false }
+      );
+      return packed;
+    } catch (err) {
+      throw new DIDCommFailure("pack", err);
+    }
   }
 
   async resolve(did: string): Promise<DIDDoc | null> {

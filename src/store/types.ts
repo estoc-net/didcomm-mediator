@@ -19,6 +19,25 @@ export interface StoredMessage {
   createdAt: number;
 }
 
+/**
+ * What names one forwarded package in an account's queue: the recipient the
+ * forward named and the forward's own id. A sender retrying a call repeats
+ * both, which is how the retry is told from new mail.
+ */
+export interface PackageKey {
+  next: string;
+  forwardId: string;
+}
+
+/**
+ * `repeated`: the key already holds these exact bytes, and nothing changed.
+ * `conflict`: the key holds other bytes, which stay. `full`: the account is
+ * at its quota. Nothing is written in any of the three.
+ */
+export type StoreOutcome =
+  | { outcome: "stored"; message: StoredMessage }
+  | { outcome: "repeated" | "conflict" | "full" };
+
 export interface RecipientPage {
   recipients: string[];
   /** Entries remaining after this page. */
@@ -71,8 +90,8 @@ export interface MediationStore {
   /** The account a recipient DID routes to, if any. */
   ownerOf(recipientDid: string): Promise<string | null>;
 
-  /** Returns the stored message id, or null if the account is over quota. */
-  storeMessage(ownerDid: string, packed: string): Promise<string | null>;
+  /** Queues `packed` under its key, once: the first bytes a key is given are the ones it keeps. */
+  storeMessage(ownerDid: string, key: PackageKey, packed: string): Promise<StoreOutcome>;
   messageCount(ownerDid: string): Promise<number>;
   messagesFor(ownerDid: string, limit: number): Promise<StoredMessage[]>;
   /** Deletes the named messages; returns the ids that existed and are gone. */
