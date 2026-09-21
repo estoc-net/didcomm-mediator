@@ -1,12 +1,15 @@
-FROM node:22-slim AS build
+FROM node:26-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+# better-sqlite3 ships its prebuilt binaries and needs no install script, but
+# npm 11 installing from the lockfile misses its `gypfile: false` and runs
+# node-gyp, which the slim image cannot (npm/cli#9837).
+RUN npm ci --ignore-scripts
 COPY tsconfig.json ./
 COPY src ./src
 RUN npx tsc && npm prune --omit=dev
 
-FROM node:22-slim
+FROM node:26-slim
 WORKDIR /app
 ENV NODE_ENV=production \
     MEDIATOR_DATA_DIR=/data \
