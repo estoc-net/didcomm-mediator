@@ -46,9 +46,9 @@ export const ENCRYPTED_MEDIA_TYPE = "application/didcomm-encrypted+json";
  * Why a forward was not queued, as the HTTP status its sender sees. Malformed
  * (400) and oversized (413) are judged on the forward alone. Everything that
  * depends on who holds mail here — no such recipient, a full queue, a key
- * already holding other bytes — is one answer (422), which keeps those three
- * apart from nobody; an accepted forward still tells its sender that `next`
- * takes mail here right now. The message never quotes the forward.
+ * already holding other bytes — is one answer (422), which does not tell the
+ * three apart; an accepted forward still tells its sender that `next` takes
+ * mail here right now. The message never quotes the forward.
  */
 export class ForwardRefused extends Error {
   constructor(
@@ -207,7 +207,7 @@ function envelopeOf(incoming: Unpacked, limit: number): string {
       canonical = canonicalize(envelope);
     }
   } catch {
-    // Nested past what the stack walks, or a number with no canonical form.
+    // Nested past what the stack walks, or a value with no canonical form.
   }
   if (canonical === undefined) {
     throw malformed("attachment is not an encrypted message");
