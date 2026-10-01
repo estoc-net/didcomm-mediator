@@ -88,8 +88,9 @@ function returnRouteOpen(incoming: Unpacked, { session }: HandlerContext): boole
  * Open envelope in, sealed reply out (or null when the exchange is one-way).
  *
  * The reply's threading and addressing are decided here for every handler at
- * once: thid continues the incoming thread, a problem-report also carries
- * pthid, and the reply is sealed to the DID the envelope *proved*, never the
+ * once: thid continues the incoming thread, or names the request itself
+ * where the protocol answers each request on its own, a problem-report also
+ * carries pthid, and the reply is sealed to the DID the envelope *proved*, never the
  * one the plaintext claimed.
  */
 export async function dispatch(

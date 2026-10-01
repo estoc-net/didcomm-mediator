@@ -7,6 +7,7 @@ import {
   isShortForm,
   longToShort,
   resolveDIDCommDoc,
+  resolveLongForm,
 } from "@estoc/did-peer";
 import type { DIDDoc, VerificationMethod } from "@estoc/did-peer";
 
@@ -43,25 +44,61 @@ export interface ReplicaGrant {
   replicaLongForm: string;
 }
 
-/** A did:peer:4 in the spelling bindings are compared and stored under. */
+/**
+ * A did:peer:4 in the spelling bindings are compared and stored under. The
+ * short form is cut from a long one, not derived from it, so this is for a
+ * DID whose document has already been resolved.
+ */
 export function canonicalDid(did: string): string {
   return isLongForm(did) ? longToShort(did) : did;
 }
 
+/**
+ * The same spelling for a DID nothing has resolved yet, or null when it is a
+ * long form whose document is not the one its short form commits to.
+ */
+function provenDid(did: string): string | null {
+  if (!isLongForm(did)) {
+    return did;
+  }
+  try {
+    resolveLongForm(did);
+  } catch {
+    return null;
+  }
+  return longToShort(did);
+}
+
+/**
+ * For each curve, the method type a multibase key of it resolves under: a
+ * Multikey arrives here already renamed to the suite its prefix names.
+ */
 const CURVES = {
-  Ed25519: { multicodec: [0xed, 0x01], alg: "EdDSA" },
-  X25519: { multicodec: [0xec, 0x01], alg: "ECDH-ES" },
+  Ed25519: { multicodec: [0xed, 0x01], alg: "EdDSA", suite: "Ed25519VerificationKey2020" },
+  X25519: { multicodec: [0xec, 0x01], alg: "ECDH-ES", suite: "X25519KeyAgreementKey2020" },
 };
 type Curve = keyof typeof CURVES;
 
+/**
+ * The method's key on `crv`, or null unless its type, encoding and curve are
+ * a combination DIDComm can use: bytes of the right curve under a type the
+ * library does not read are a key nothing can be sealed to.
+ */
 function okpJwk(method: VerificationMethod, crv: Curve): Record<string, unknown> | null {
-  const { publicKeyJwk, publicKeyMultibase } = method;
+  const { type, publicKeyJwk, publicKeyMultibase } = method;
   if (publicKeyJwk !== undefined) {
-    return publicKeyJwk.kty === "OKP" && publicKeyJwk.crv === crv
+    return type === "JsonWebKey2020" &&
+      publicKeyMultibase === undefined &&
+      publicKeyJwk.kty === "OKP" &&
+      publicKeyJwk.crv === crv
       ? { kty: "OKP", crv, x: publicKeyJwk.x }
       : null;
   }
-  if (publicKeyMultibase === undefined || !publicKeyMultibase.startsWith("z")) {
+  if (
+    type !== CURVES[crv].suite ||
+    publicKeyMultibase === undefined ||
+    !publicKeyMultibase.startsWith("z")
+  ) {
     return null;
   }
   let decoded: Uint8Array;
@@ -77,10 +114,6 @@ function okpJwk(method: VerificationMethod, crv: Curve): Record<string, unknown>
   return { kty: "OKP", crv, x: bytesToBase64url(decoded.slice(2)) };
 }
 
-/**
- * Whether `doc` names keys for `relationship`, every one of them a public
- * key on `crv` that a JOSE library takes.
- */
 async function holdsKeys(
   doc: DIDDoc,
   relationship: "authentication" | "keyAgreement",
@@ -154,7 +187,7 @@ function payloadOf(bytes: Uint8Array): Record<string, string> | null {
 function servedBy(doc: DIDDoc, mediator: string): boolean {
   return doc.service.some(
     ({ serviceEndpoint }) =>
-      canonicalDid(typeof serviceEndpoint === "string" ? serviceEndpoint : serviceEndpoint.uri) ===
+      provenDid(typeof serviceEndpoint === "string" ? serviceEndpoint : serviceEndpoint.uri) ===
       mediator
   );
 }
@@ -222,9 +255,10 @@ export async function verifyReplicaGrant(
     return null;
   }
 
-  const mediator = canonicalDid(payload.mediator);
+  const mediator = provenDid(payload.mediator);
   const replicaDoc = await resolveDIDCommDoc(replicaLongForm);
   if (
+    mediator === null ||
     replicaDoc === null ||
     !servedBy(replicaDoc, mediator) ||
     !(await holdsKeys(replicaDoc, "authentication", "Ed25519")) ||

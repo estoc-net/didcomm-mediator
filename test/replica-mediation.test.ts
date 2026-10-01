@@ -4,7 +4,8 @@ import type { Hono } from "hono";
 import type { IMessage } from "@estoc/didcomm-node";
 import { CompactSign, importJWK } from "jose";
 import canonicalize from "canonicalize";
-import { longToShort } from "@estoc/did-peer";
+import bs58 from "bs58";
+import { bytesToBase64url, longToShort } from "@estoc/did-peer";
 
 import { replicaPolicyFrom, type MediatorConfig } from "../src/config.js";
 import type { DIDCommContext } from "../src/didcomm/didcomm.js";
@@ -188,6 +189,26 @@ describe("register", () => {
     ]);
   });
 
+  it("enrolls a replica whose keys are spelled as JWKs", async () => {
+    const replica = await peer4Agent(mediator.did, (document) => ({
+      ...document,
+      verificationMethod: document.verificationMethod!.map((method) => ({
+        id: method.id,
+        type: "JsonWebKey2020",
+        publicKeyJwk: {
+          kty: "OKP",
+          crv: method.id === "#key-1" ? "Ed25519" : "X25519",
+          x: bytesToBase64url(bs58.decode((method.publicKeyMultibase as string).slice(1)).slice(2)),
+        },
+      })),
+    }));
+    const { grant } = await enrollment(account, {
+      replica_did: replica.did,
+      replica_long_form: replica.longForm,
+    });
+    expect((await register(grant))?.type).toBe(REGISTERED);
+  });
+
   it("gives two first registrations racing for one account the same account", async () => {
     const [first, second] = await Promise.all([enrollment(), enrollment()]);
 
@@ -290,6 +311,37 @@ describe("register", () => {
         });
         await refused(grant);
       }
+    });
+
+    it("whose replica holds its key under a type DIDComm cannot use", async () => {
+      for (const type of ["UnrecognizedKeyType", "Ed25519VerificationKey2020"]) {
+        const replica = await peer4Agent(mediator.did, (document) => ({
+          ...document,
+          verificationMethod: document.verificationMethod!.map((method) =>
+            method.id === "#key-2" ? { ...method, type } : method
+          ),
+        }));
+        const { grant } = await enrollment(account, {
+          replica_did: replica.did,
+          replica_long_form: replica.longForm,
+        });
+        await refused(grant);
+      }
+    });
+
+    it("whose mediator, as named or as the replica's service, is a long form of another document", async () => {
+      mediator = await mintIdentity(TEST_CONFIG.publicUrl, ["peer4"]);
+      app = serve();
+      const short = longToShort(mediator.did);
+      const other = (await peer4Agent(null)).longForm;
+      const mismatched = `${short}${other.slice(other.lastIndexOf(":"))}`;
+
+      const [named, served] = [
+        await enrollment(account, { mediator: mismatched }, short),
+        await enrollment(account, { mediator: short }, mismatched),
+      ];
+      await refused(named.grant);
+      await refused(served.grant);
     });
 
     it("with IDs that are not UUIDv7", async () => {
@@ -496,7 +548,7 @@ describe("a reply to a control", () => {
 });
 
 describe("the mediator an account is bound to", () => {
-  it("is one did:peer:4 in either spelling, in the grant, the service and the address", async () => {
+  it("is one did:peer:4 in either spelling, in the grant and in the replica's service", async () => {
     mediator = await mintIdentity(TEST_CONFIG.publicUrl, ["peer4"]);
     app = serve();
     const short = longToShort(mediator.did);
@@ -505,13 +557,13 @@ describe("the mediator an account is bound to", () => {
       await enrollment(account, {}, short),
       await enrollment(account, {}, mediator.did),
     ];
-    const [toLong, toShort] = [
+    const [underShort, underLong] = [
       await register(spelled[0].grant),
       await send(known(account), REGISTER, { grant: spelled[1].grant }),
     ];
-    expect(toLong?.type).toBe(REGISTERED);
-    expect(toLong?.body.routing_did).toBe(mediator.did);
-    expect(toShort?.type).toBe(REGISTERED);
+    expect(underShort?.type).toBe(REGISTERED);
+    expect(underShort?.body.routing_did).toBe(mediator.did);
+    expect(underLong?.type).toBe(REGISTERED);
     expect((await roster())?.body.entries).toHaveLength(2);
   });
 
