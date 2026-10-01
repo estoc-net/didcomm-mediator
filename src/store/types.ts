@@ -4,8 +4,9 @@
  *
  * An account is a DID that asked for mediation and was granted it — existence
  * of the row is the grant. A keylist entry binds a recipient DID to exactly
- * one owner account; the binding is exclusive, first-come, and the ownership
- * checks live in the protocol layer, not here.
+ * one owner account; the binding is exclusive and first-come. Who is asking
+ * is the protocol layer's to prove; that a DID is bound once, under one
+ * protocol only, is kept here, inside the write that binds it.
  *
  * Every method is async because the least capable backend sets the contract:
  * Cloudflare D1 has no synchronous API, and the protocol layer is shared.
@@ -46,6 +47,8 @@ export interface ReplicaRegistration {
   accountDid: string;
   accountLongForm: string;
   mediationId: string;
+  /** The mediator DID the account is bound to, a did:peer:4 in its short form. */
+  mediator: string;
   replicaId: string;
   replicaDid: string;
   replicaLongForm: string;
@@ -58,7 +61,8 @@ export interface ReplicaRegistration {
 /**
  * `registered` also answers an exact repeat, with the time of the first.
  * `refused`: the account is absent and may not be created. `conflict`: an ID
- * or DID is already bound otherwise, here or under ordinary mediation.
+ * or DID is already bound otherwise, here or under ordinary mediation, or the
+ * account is bound to another mediation ID or mediator DID.
  * `full`: the account is at its replica limit. Only `registered` wrote
  * anything, and it wrote the account and the replica together or neither.
  */
@@ -145,10 +149,12 @@ export interface MediationStore {
   isReplicaAccount(did: string): Promise<boolean>;
   /**
    * The account's replicas with an ordinal after `after` and up to `through`
-   * (its current size when null), oldest first; null without such an account.
+   * (its current size when null), oldest first; null without such an account
+   * bound to `mediator`.
    */
   replicaRoster(
     accountDid: string,
+    mediator: string,
     after: number,
     through: number | null,
     limit: number

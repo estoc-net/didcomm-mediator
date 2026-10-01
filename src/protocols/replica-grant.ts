@@ -19,10 +19,7 @@ import type { DIDDoc, VerificationMethod } from "@estoc/did-peer";
 
 export const GRANT_TYP = "estoc/replica-grant+jws";
 
-/**
- * A grant holds two did:peer:4 long forms and a signature; a listing page
- * returns several at once, so one grant is kept well under the wire limit.
- */
+/** Several times what a did:peer:4 long form and a signature come to. */
 const MAX_GRANT_CHARS = 16 * 1024;
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -39,6 +36,7 @@ const PAYLOAD_FIELDS = [
 export interface ReplicaGrant {
   account: string;
   mediationId: string;
+  /** In its short form when it is a did:peer:4, however the grant spelled it. */
   mediator: string;
   replicaId: string;
   replicaDid: string;
@@ -50,13 +48,17 @@ export function canonicalDid(did: string): string {
   return isLongForm(did) ? longToShort(did) : did;
 }
 
-const ED25519_MULTICODEC = [0xed, 0x01];
+const CURVES = {
+  Ed25519: { multicodec: [0xed, 0x01], alg: "EdDSA" },
+  X25519: { multicodec: [0xec, 0x01], alg: "ECDH-ES" },
+};
+type Curve = keyof typeof CURVES;
 
-function ed25519Jwk(method: VerificationMethod): Record<string, unknown> | null {
+function okpJwk(method: VerificationMethod, crv: Curve): Record<string, unknown> | null {
   const { publicKeyJwk, publicKeyMultibase } = method;
   if (publicKeyJwk !== undefined) {
-    return publicKeyJwk.kty === "OKP" && publicKeyJwk.crv === "Ed25519"
-      ? { kty: "OKP", crv: "Ed25519", x: publicKeyJwk.x }
+    return publicKeyJwk.kty === "OKP" && publicKeyJwk.crv === crv
+      ? { kty: "OKP", crv, x: publicKeyJwk.x }
       : null;
   }
   if (publicKeyMultibase === undefined || !publicKeyMultibase.startsWith("z")) {
@@ -68,14 +70,39 @@ function ed25519Jwk(method: VerificationMethod): Record<string, unknown> | null 
   } catch {
     return null;
   }
-  if (
-    decoded.length !== 34 ||
-    decoded[0] !== ED25519_MULTICODEC[0] ||
-    decoded[1] !== ED25519_MULTICODEC[1]
-  ) {
+  const [codec, variant] = CURVES[crv].multicodec;
+  if (decoded.length !== 34 || decoded[0] !== codec || decoded[1] !== variant) {
     return null;
   }
-  return { kty: "OKP", crv: "Ed25519", x: bytesToBase64url(decoded.slice(2)) };
+  return { kty: "OKP", crv, x: bytesToBase64url(decoded.slice(2)) };
+}
+
+/**
+ * Whether `doc` names keys for `relationship`, every one of them a public
+ * key on `crv` that a JOSE library takes.
+ */
+async function holdsKeys(
+  doc: DIDDoc,
+  relationship: "authentication" | "keyAgreement",
+  crv: Curve
+): Promise<boolean> {
+  const ids = doc[relationship];
+  if (ids.length === 0) {
+    return false;
+  }
+  for (const id of ids) {
+    const method = doc.verificationMethod.find((candidate) => candidate.id === id);
+    const jwk = method === undefined ? null : okpJwk(method, crv);
+    if (jwk === null) {
+      return false;
+    }
+    try {
+      await importJWK(jwk, CURVES[crv].alg);
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -90,18 +117,21 @@ function authenticationKey(doc: DIDDoc, kid: string): Record<string, unknown> | 
   }
   const id = `${doc.id}#${fragment}`;
   const method = doc.verificationMethod.find((candidate) => candidate.id === id);
-  return method !== undefined && doc.authentication.includes(id) ? ed25519Jwk(method) : null;
+  return method !== undefined && doc.authentication.includes(id)
+    ? okpJwk(method, "Ed25519")
+    : null;
 }
 
 /**
  * The payload as its exact fields, or null: a grant is RFC 8785 text, so the
- * bytes that were signed are the only spelling of what they say.
+ * bytes that were signed are the only spelling of what they say. A byte-order
+ * mark is kept in the text, where it fails like any other stray byte.
  */
 function payloadOf(bytes: Uint8Array): Record<string, string> | null {
   let text: string;
   let parsed: unknown;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
     parsed = JSON.parse(text);
   } catch {
     return null;
@@ -124,13 +154,16 @@ function payloadOf(bytes: Uint8Array): Record<string, string> | null {
 function servedBy(doc: DIDDoc, mediator: string): boolean {
   return doc.service.some(
     ({ serviceEndpoint }) =>
-      (typeof serviceEndpoint === "string" ? serviceEndpoint : serviceEndpoint.uri) === mediator
+      canonicalDid(typeof serviceEndpoint === "string" ? serviceEndpoint : serviceEndpoint.uri) ===
+      mediator
   );
 }
 
 /**
  * What `jws` grants, once `accountDoc`'s own authentication key has signed
- * it and everything it names holds together; null otherwise. Whether the
+ * it and everything it names holds together; null otherwise. The replica it
+ * names must be able to act as one: it will sign in with an Ed25519 key and
+ * be sealed to on an X25519 one, and enrollment is for life. Whether the
  * account and mediator are the ones the request came from and went to is
  * the caller's to compare.
  */
@@ -172,7 +205,6 @@ export async function verifyReplicaGrant(
   const {
     account,
     mediation_id: mediationId,
-    mediator,
     replica_id: replicaId,
     replica_did: replicaDid,
     replica_long_form: replicaLongForm,
@@ -190,8 +222,14 @@ export async function verifyReplicaGrant(
     return null;
   }
 
+  const mediator = canonicalDid(payload.mediator);
   const replicaDoc = await resolveDIDCommDoc(replicaLongForm);
-  if (replicaDoc === null || !servedBy(replicaDoc, mediator)) {
+  if (
+    replicaDoc === null ||
+    !servedBy(replicaDoc, mediator) ||
+    !(await holdsKeys(replicaDoc, "authentication", "Ed25519")) ||
+    !(await holdsKeys(replicaDoc, "keyAgreement", "X25519"))
+  ) {
     return null;
   }
 

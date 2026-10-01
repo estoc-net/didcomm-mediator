@@ -42,7 +42,6 @@ const HANDLERS: Record<string, Handler> = {
   [BLOB_DELETE]: blobDelete,
 };
 
-/** Handled only where replica mediation is on; elsewhere these are types nobody handles. */
 const REPLICA_MEDIATION_HANDLERS: Record<string, Handler> = {
   [REGISTER]: register,
   [LIST]: list,
@@ -99,10 +98,10 @@ export async function dispatch(
 ): Promise<string | null> {
   const routed = returnRouteOpen(incoming, context);
   const { type } = incoming.message;
-  const handler =
-    HANDLERS[type] ??
-    (context.config.replicaMediation ? REPLICA_MEDIATION_HANDLERS[type] : undefined) ??
-    unknownType;
+  const replicaControl = context.config.replicaMediation
+    ? REPLICA_MEDIATION_HANDLERS[type]
+    : undefined;
+  const handler = HANDLERS[type] ?? replicaControl ?? unknownType;
   const reply = await handler(incoming, context);
 
   const replyTo = context.sender;
@@ -111,7 +110,12 @@ export async function dispatch(
     return null;
   }
 
-  const thid = incoming.message.thid ?? incoming.message.id;
+  // A replica control's reply is matched to its request by the request's ID
+  // alone, whatever thread the request itself sat in.
+  const thid =
+    replicaControl !== undefined
+      ? incoming.message.id
+      : (incoming.message.thid ?? incoming.message.id);
   // Reply as the DID the sender addressed: a mediator answering to several
   // names must not reveal the others, and the sender's resolver may only
   // know the one it used.

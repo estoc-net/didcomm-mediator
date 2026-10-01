@@ -56,7 +56,9 @@ export function replicaLimits(policy: MediatorPolicy): Record<string, number> {
 interface Control {
   /** The authenticated account DID, in its short form when it is a did:peer:4. */
   account: string;
-  /** The one mediator DID the request named and was sealed to. */
+  /** The one mediator DID the request named and was sealed to, as it spelled it. */
+  addressed: string;
+  /** That DID in its short form when it is a did:peer:4. */
   mediator: string;
   body: Record<string, unknown>;
 }
@@ -91,7 +93,12 @@ function controlOf(
   if (names.join() !== [...fields].sort().join()) {
     return null;
   }
-  return { account: canonicalDid(sender), mediator: addressedTo, body: message.body };
+  return {
+    account: canonicalDid(sender),
+    addressed: addressedTo,
+    mediator: canonicalDid(addressedTo),
+    body: message.body,
+  };
 }
 
 export async function register(
@@ -132,6 +139,7 @@ export async function register(
     accountDid: grant.account,
     accountLongForm,
     mediationId: grant.mediationId,
+    mediator: grant.mediator,
     replicaId: grant.replicaId,
     replicaDid: grant.replicaDid,
     replicaLongForm: grant.replicaLongForm,
@@ -153,7 +161,7 @@ export async function register(
         body: {
           account: grant.account,
           mediation_id: grant.mediationId,
-          routing_did: control.mediator,
+          routing_did: control.addressed,
           replica_id: grant.replicaId,
           replica_did: grant.replicaDid,
           state: "active",
@@ -228,6 +236,7 @@ export async function list(incoming: Unpacked, context: HandlerContext): Promise
 
   const roster = await store.replicaRoster(
     control.account,
+    control.mediator,
     cursor?.after ?? 0,
     cursor?.through ?? null,
     limit as number

@@ -161,11 +161,17 @@ function multikey(jwk: Record<string, unknown>): string {
   return `z${bs58.encode(Uint8Array.from([...prefix, ...base64urlToBytes(jwk.x as string)]))}`;
 }
 
-export async function peer4Agent(service: string | null): Promise<Peer4Agent> {
+type InputDocument = Parameters<typeof encodeLongForm>[0];
+
+/** `reshape` turns the document into one no vault would mint. */
+export async function peer4Agent(
+  service: string | null,
+  reshape: (document: InputDocument) => InputDocument = (document) => document
+): Promise<Peer4Agent> {
   const [agreement, signing] = (await mintSecrets()).map(
     (secret) => secret.privateKeyJwk as Record<string, unknown>
   );
-  const longForm = encodeLongForm({
+  const longForm = encodeLongForm(reshape({
     "@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"],
     verificationMethod: [
       { id: "#key-1", type: "Multikey", publicKeyMultibase: multikey(signing) },
@@ -184,7 +190,7 @@ export async function peer4Agent(service: string | null): Promise<Peer4Agent> {
             },
           ],
         }),
-  });
+  }));
   const did = longToShort(longForm);
   const secretsAs = (name: string): Secret[] => [
     { id: `${name}#key-1`, type: "JsonWebKey2020", privateKeyJwk: signing },

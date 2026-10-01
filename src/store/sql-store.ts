@@ -107,6 +107,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS replica_accounts (
      did          TEXT PRIMARY KEY,
      mediation_id TEXT NOT NULL,
+     mediator     TEXT NOT NULL,
      long_form    TEXT NOT NULL,
      created_at   INTEGER NOT NULL
    )`,
@@ -375,6 +376,7 @@ export class SqlStore implements MediationStore {
     accountDid,
     accountLongForm,
     mediationId,
+    mediator,
     replicaId,
     replicaDid,
     replicaLongForm,
@@ -391,17 +393,19 @@ export class SqlStore implements MediationStore {
     const [, , accounts, bound, members] = await this.batch([
       {
         sql:
-          "INSERT INTO replica_accounts (did, mediation_id, long_form, created_at) " +
-          `SELECT ?, ?, ?, ? WHERE ? = 1 AND ${NOT_ORDINARY} AND ${NOT_ORDINARY} ` +
+          "INSERT INTO replica_accounts (did, mediation_id, mediator, long_form, created_at) " +
+          `SELECT ?, ?, ?, ?, ? WHERE ? = 1 AND ? > 0 AND ${NOT_ORDINARY} AND ${NOT_ORDINARY} ` +
           `AND ${replicaIsNoAccount} ` +
           "AND NOT EXISTS (SELECT 1 FROM replicas WHERE replica_did IN (?, ?)) " +
           "ON CONFLICT (did) DO NOTHING",
         params: [
           accountDid,
           mediationId,
+          mediator,
           accountLongForm,
           now,
           createAccount ? 1 : 0,
+          maxReplicas,
           ...account,
           ...account,
           ...replica,
@@ -416,7 +420,8 @@ export class SqlStore implements MediationStore {
           "INSERT INTO replicas " +
           "(replica_did, account_did, replica_id, ordinal, long_form, grant_jws, registered_at) " +
           `SELECT ?, ?, ?, ${size} + 1, ?, ?, ? ` +
-          "WHERE EXISTS (SELECT 1 FROM replica_accounts WHERE did = ? AND mediation_id = ?) " +
+          "WHERE EXISTS (SELECT 1 FROM replica_accounts " +
+          "WHERE did = ? AND mediation_id = ? AND mediator = ?) " +
           `AND ${NOT_ORDINARY} AND ${replicaIsNoAccount} AND ${size} < ? ` +
           "ON CONFLICT DO NOTHING",
         params: [
@@ -429,6 +434,7 @@ export class SqlStore implements MediationStore {
           Math.floor(now / 1000),
           accountDid,
           mediationId,
+          mediator,
           ...replica,
           ...replica,
           replicaDid,
@@ -436,7 +442,10 @@ export class SqlStore implements MediationStore {
           maxReplicas,
         ],
       },
-      { sql: "SELECT mediation_id FROM replica_accounts WHERE did = ?", params: [accountDid] },
+      {
+        sql: "SELECT mediation_id, mediator FROM replica_accounts WHERE did = ?",
+        params: [accountDid],
+      },
       {
         sql: "SELECT account_did, replica_id, registered_at FROM replicas WHERE replica_did = ?",
         params: [replicaDid],
@@ -444,11 +453,14 @@ export class SqlStore implements MediationStore {
       { sql: "SELECT replica_id FROM replicas WHERE account_did = ?", params: [accountDid] },
     ]);
 
-    const held = (accounts.rows as { mediation_id: string }[])[0];
+    const held = (accounts.rows as { mediation_id: string; mediator: string }[])[0];
     if (held === undefined) {
-      return { outcome: createAccount ? "conflict" : "refused" };
+      if (!createAccount) {
+        return { outcome: "refused" };
+      }
+      return { outcome: maxReplicas > 0 ? "conflict" : "full" };
     }
-    if (held.mediation_id !== mediationId) {
+    if (held.mediation_id !== mediationId || held.mediator !== mediator) {
       return { outcome: "conflict" };
     }
 
@@ -472,18 +484,24 @@ export class SqlStore implements MediationStore {
 
   async replicaRoster(
     accountDid: string,
+    mediator: string,
     after: number,
     through: number | null,
     limit: number
   ): Promise<RosterPage | null> {
+    const ofAccount =
+      "account_did = (SELECT did FROM replica_accounts WHERE did = ? AND mediator = ?)";
     const [count, page] = await this.batch([
-      { sql: "SELECT COUNT(*) AS n FROM replicas WHERE account_did = ?", params: [accountDid] },
+      {
+        sql: `SELECT COUNT(*) AS n FROM replicas WHERE ${ofAccount}`,
+        params: [accountDid, mediator],
+      },
       {
         sql:
           "SELECT ordinal, grant_jws, registered_at FROM replicas " +
-          "WHERE account_did = ? AND ordinal > ? AND (? IS NULL OR ordinal <= ?) " +
+          `WHERE ${ofAccount} AND ordinal > ? AND (? IS NULL OR ordinal <= ?) ` +
           "ORDER BY ordinal LIMIT ?",
-        params: [accountDid, after, through, through, limit],
+        params: [accountDid, mediator, after, through, through, limit],
       },
     ]);
 

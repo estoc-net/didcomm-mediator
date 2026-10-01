@@ -23,7 +23,7 @@ export interface MediatorPolicy {
    */
   maxMessageBytes: number;
   /**
-   * blob-store/1.0 limits (`docs/blob-store.md` in estoc): how long a put
+   * blob-store/1.0 limits: how long a put
    * keeps a blob, the largest blob, and the bytes one mediation may hold at
    * once. Whether blobs are on at all is a deployment matter (a directory on
    * Node, an R2 binding on Workers), not policy.
@@ -93,13 +93,24 @@ export function blobPolicyFrom(get: (name: string) => string | undefined) {
   };
 }
 
+/**
+ * The limits a registration discloses are promises to the account, and a
+ * limit of zero or less promises an account that can hold nothing.
+ */
 export function replicaPolicyFrom(get: (name: string) => string | undefined) {
+  const limit = (name: string, fallback: number): number => {
+    const value = Number(get(name) ?? fallback);
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`${name} must be a positive integer, got ${get(name)}`);
+    }
+    return value;
+  };
   return {
     replicaMediation: get("MEDIATOR_REPLICA_MEDIATION") === "true",
-    maxActiveReplicas: Number(get("MEDIATOR_MAX_ACTIVE_REPLICAS") ?? 16),
-    maxMembershipPage: Number(get("MEDIATOR_MAX_MEMBERSHIP_PAGE") ?? 16),
-    maxSharedRecipients: Number(get("MEDIATOR_MAX_SHARED_RECIPIENTS") ?? 10000),
-    maxRetainedBytes: Number(get("MEDIATOR_MAX_RETAINED_BYTES") ?? 64 * 1024 * 1024),
+    maxActiveReplicas: limit("MEDIATOR_MAX_ACTIVE_REPLICAS", 16),
+    maxMembershipPage: limit("MEDIATOR_MAX_MEMBERSHIP_PAGE", 16),
+    maxSharedRecipients: limit("MEDIATOR_MAX_SHARED_RECIPIENTS", 10000),
+    maxRetainedBytes: limit("MEDIATOR_MAX_RETAINED_BYTES", 64 * 1024 * 1024),
   };
 }
 

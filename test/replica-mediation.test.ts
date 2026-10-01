@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
 import type { IMessage } from "@estoc/didcomm-node";
 import { CompactSign, importJWK } from "jose";
+import canonicalize from "canonicalize";
+import { longToShort } from "@estoc/did-peer";
 
-import type { MediatorConfig } from "../src/config.js";
+import { replicaPolicyFrom, type MediatorConfig } from "../src/config.js";
 import type { DIDCommContext } from "../src/didcomm/didcomm.js";
 import { buildServer } from "../src/server.js";
 import { mintIdentity, type MediatorIdentity } from "../src/identity-core.js";
@@ -72,15 +74,13 @@ async function send(
   overrides: Partial<IMessage> = {},
   to: Hono = app
 ): Promise<IMessage | null> {
-  const packed = await speaker.ctx.packEncrypted(
-    plaintext(type, body, {
-      from: speaker.did,
-      to: [mediator.did],
-      return_route: "all",
-      ...overrides,
-    }),
-    mediator.did
-  );
+  const message = plaintext(type, body, {
+    from: speaker.did,
+    to: [mediator.did],
+    return_route: "all",
+    ...overrides,
+  });
+  const packed = await speaker.ctx.packEncrypted(message, message.to![0]);
   const res = await to.request("/", {
     method: "POST",
     headers: { "content-type": ENCRYPTED },
@@ -101,14 +101,15 @@ interface Enrollment {
 
 async function enrollment(
   of: Peer4Agent = account,
-  changes: Record<string, string> = {}
+  changes: Record<string, string> = {},
+  mediatorDid: string = mediator.did
 ): Promise<Enrollment> {
-  const replica = await peer4Agent(mediator.did);
+  const replica = await peer4Agent(mediatorDid);
   const replicaId = uuidv7();
   const payload = {
     account: of.did,
     mediation_id: mediationId,
-    mediator: mediator.did,
+    mediator: mediatorDid,
     replica_id: replicaId,
     replica_did: replica.did,
     replica_long_form: replica.longForm,
@@ -273,6 +274,24 @@ describe("register", () => {
       await expectProblem(await register(grant, firstContact(selfServed)), "invalid-grant");
     });
 
+    it("whose replica has no key to sign in with, or none to be sealed to", async () => {
+      const shapes: ((document: Record<string, unknown>) => Record<string, unknown>)[] = [
+        ({ verificationMethod: _, authentication: __, keyAgreement: ___, ...rest }) => rest,
+        (document) => ({ ...document, authentication: [] }),
+        (document) => ({ ...document, keyAgreement: [] }),
+        (document) => ({ ...document, authentication: ["#key-2"] }),
+        (document) => ({ ...document, keyAgreement: ["#key-1"] }),
+      ];
+      for (const shape of shapes) {
+        const replica = await peer4Agent(mediator.did, shape as never);
+        const { grant } = await enrollment(account, {
+          replica_did: replica.did,
+          replica_long_form: replica.longForm,
+        });
+        await refused(grant);
+      }
+    });
+
     it("with IDs that are not UUIDv7", async () => {
       await refused((await enrollment(account, { replica_id: randomUUID() })).grant);
       await refused((await enrollment(account, { mediation_id: "1" })).grant);
@@ -287,6 +306,19 @@ describe("register", () => {
       const spaced = new TextEncoder().encode(JSON.stringify(payload, null, 1));
       await refused(
         await new CompactSign(spaced)
+          .setProtectedHeader({
+            alg: "EdDSA",
+            typ: "estoc/replica-grant+jws",
+            kid: `${account.did}#key-1`,
+          })
+          .sign(await importJWK(account.signingKey, "EdDSA"))
+      );
+    });
+
+    it("whose signed bytes open with a byte-order mark", async () => {
+      const { payload } = await enrollment();
+      await refused(
+        await new CompactSign(new TextEncoder().encode(`\ufeff${canonicalize(payload)}`))
           .setProtectedHeader({
             alg: "EdDSA",
             typ: "estoc/replica-grant+jws",
@@ -408,6 +440,15 @@ describe("register", () => {
     expect((await register(enrolled[0].grant))?.type).toBe(REGISTERED);
   });
 
+  it("leaves no account behind where the replica limit admits none", async () => {
+    const none = serve({ maxActiveReplicas: 0 });
+    const { grant } = await enrollment();
+
+    await expectProblem(await send(firstContact(account), REGISTER, { grant }, {}, none), "quota");
+    expect(await store.isReplicaAccount(account.did)).toBe(false);
+    expect(await store.resolutionMaterial(account.did)).toBeNull();
+  });
+
   it("creates no account where registration is closed", async () => {
     const closed = serve({ openRegistration: false });
     const { grant } = await enrollment();
@@ -431,6 +472,77 @@ describe("register", () => {
     expect(((await (await app.request("/")).json()) as { protocols: string[] }).protocols).toContain(
       PROTOCOL
     );
+  });
+});
+
+describe("a reply to a control", () => {
+  it("carries the request's own ID as its thread, whatever thread the request sat in", async () => {
+    const { grant } = await enrollment();
+    const asked = { id: randomUUID(), thid: "an-older-exchange" };
+
+    const registered = await send(firstContact(account), REGISTER, { grant }, asked);
+    expect(registered?.type).toBe(REGISTERED);
+    expect(registered?.thid).toBe(asked.id);
+
+    const listed = await send(known(account), LIST, { cursor: null, limit: 2 }, asked);
+    expect(listed?.type).toBe(REPLICAS);
+    expect(listed?.thid).toBe(asked.id);
+
+    const refused = await send(known(account), LIST, { cursor: null, limit: 0 }, asked);
+    await expectProblem(refused, "invalid-message");
+    expect(refused?.thid).toBe(asked.id);
+    expect(refused?.pthid).toBe(asked.id);
+  });
+});
+
+describe("the mediator an account is bound to", () => {
+  it("is one did:peer:4 in either spelling, in the grant, the service and the address", async () => {
+    mediator = await mintIdentity(TEST_CONFIG.publicUrl, ["peer4"]);
+    app = serve();
+    const short = longToShort(mediator.did);
+
+    const spelled = [
+      await enrollment(account, {}, short),
+      await enrollment(account, {}, mediator.did),
+    ];
+    const [toLong, toShort] = [
+      await register(spelled[0].grant),
+      await send(known(account), REGISTER, { grant: spelled[1].grant }),
+    ];
+    expect(toLong?.type).toBe(REGISTERED);
+    expect(toLong?.body.routing_did).toBe(mediator.did);
+    expect(toShort?.type).toBe(REGISTERED);
+    expect((await roster())?.body.entries).toHaveLength(2);
+  });
+
+  it("is not another name the same deployment answers to", async () => {
+    mediator = await mintIdentity(TEST_CONFIG.publicUrl, ["peer2", "peer4"]);
+    app = serve();
+    const alias = mediator.aliases[0].did;
+    expect((await register((await enrollment()).grant))?.type).toBe(REGISTERED);
+
+    const underAlias = await enrollment(account, {}, alias);
+    await expectProblem(
+      await send(known(account), REGISTER, { grant: underAlias.grant }, { to: [alias] }),
+      "identity-conflict"
+    );
+    await expectProblem(
+      await send(known(account), LIST, { cursor: null, limit: 2 }, { to: [alias] }),
+      "unknown-account"
+    );
+    expect((await roster())?.body.entries).toHaveLength(1);
+  });
+});
+
+describe("the replica limits a deployment sets", () => {
+  it("are positive integers, or the mediator does not start", () => {
+    const set = (value: string) => () =>
+      replicaPolicyFrom((name) => (name === "MEDIATOR_MAX_ACTIVE_REPLICAS" ? value : undefined));
+
+    for (const value of ["0", "-1", "1.5", "many"]) {
+      expect(set(value)).toThrow("MEDIATOR_MAX_ACTIVE_REPLICAS");
+    }
+    expect(set("4")().maxActiveReplicas).toBe(4);
   });
 });
 
