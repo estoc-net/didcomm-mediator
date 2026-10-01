@@ -7,6 +7,7 @@ export const QUERIES = "https://didcomm.org/discover-features/2.0/queries";
 export const DISCLOSE = "https://didcomm.org/discover-features/2.0/disclose";
 
 export const BLOB_STORE_PROTOCOL = "https://estoc.dev/blob-store/1.0";
+export const REPLICA_MEDIATION_PROTOCOL = "https://estoc.dev/replica-mediation/1.0";
 
 export const BASE_PROTOCOLS = [
   "https://didcomm.org/coordinate-mediation/3.0",
@@ -16,9 +17,16 @@ export const BASE_PROTOCOLS = [
   "https://didcomm.org/trust-ping/2.0",
 ];
 
-/** What a mediator that keeps blobs supports; the base list otherwise. */
-export function supportedProtocols(blobs: boolean): string[] {
-  return blobs ? [...BASE_PROTOCOLS, BLOB_STORE_PROTOCOL] : BASE_PROTOCOLS;
+/** The base list, plus whichever optional protocols this deployment has on. */
+export function supportedProtocols(optional: {
+  blobs: boolean;
+  replicaMediation: boolean;
+}): string[] {
+  return [
+    ...BASE_PROTOCOLS,
+    ...(optional.blobs ? [BLOB_STORE_PROTOCOL] : []),
+    ...(optional.replicaMediation ? [REPLICA_MEDIATION_PROTOCOL] : []),
+  ];
 }
 
 /**
@@ -39,7 +47,7 @@ function matches(pattern: string, id: string): boolean {
 
 export function queries(
   incoming: Unpacked,
-  { blobs }: HandlerContext
+  { blobs, config }: HandlerContext
 ): Reply {
   const asked: unknown[] = Array.isArray(incoming.message.body.queries)
     ? incoming.message.body.queries
@@ -55,7 +63,10 @@ export function queries(
         query["feature-type"] === "protocol" && typeof query.match === "string"
     );
 
-  const disclosures = supportedProtocols(blobs !== null).filter((id) =>
+  const disclosures = supportedProtocols({
+    blobs: blobs !== null,
+    replicaMediation: config.replicaMediation,
+  }).filter((id) =>
     protocolQueries.some((query) => matches(query.match, id))
   ).map((id) => ({ "feature-type": "protocol", id }));
 

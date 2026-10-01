@@ -6,6 +6,7 @@ import type {
   UnpackMetadata,
 } from "@estoc/didcomm-node";
 import { resolveDIDCommDoc } from "./did-resolver.js";
+import { isShortForm, longToShort, resolveShortForm, toDIDCommDIDDoc } from "@estoc/did-peer";
 import type { DIDDoc, Secret } from "@estoc/did-peer";
 import type { OwnIdentity } from "../identity-core.js";
 
@@ -20,16 +21,40 @@ import type { OwnIdentity } from "../identity-core.js";
  * shared.
  */
 
-/** The mediator's documents first (never fetched), then the world. */
+/** The long form kept for a short-form did:peer:4, or null when none is. */
+export type ResolutionMaterial = (shortDid: string) => Promise<string | null>;
+
+/**
+ * The mediator's documents first (never fetched), then the long forms it
+ * keeps for DIDs that introduced themselves once, then the world.
+ */
 class ChainedResolver implements DIDResolver {
   private pinned: Map<string, DIDDoc>;
 
-  constructor(didDocs: DIDDoc[]) {
+  constructor(
+    didDocs: DIDDoc[],
+    private resolutionMaterial: ResolutionMaterial | null
+  ) {
     this.pinned = new Map(didDocs.map((doc) => [doc.id, doc]));
   }
 
   async resolve(did: string): Promise<DIDDoc | null> {
-    return this.pinned.get(did) ?? (await resolveDIDCommDoc(did));
+    return this.pinned.get(did) ?? (await this.kept(did)) ?? (await resolveDIDCommDoc(did));
+  }
+
+  private async kept(did: string): Promise<DIDDoc | null> {
+    if (this.resolutionMaterial === null || !isShortForm(did)) {
+      return null;
+    }
+    const longForm = await this.resolutionMaterial(did);
+    if (longForm === null) {
+      return null;
+    }
+    try {
+      return longToShort(longForm) === did ? toDIDCommDIDDoc(resolveShortForm(longForm)) : null;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -117,6 +142,8 @@ export interface ContextOptions {
   /** Extra documents resolved without fetching — a counterparty whose DID
    * (did:web, short-form peer:4) cannot be decoded offline. */
   pinned?: DIDDoc[];
+  /** Where short-form did:peer:4 DIDs this mediator has enrolled resolve from. */
+  resolutionMaterial?: ResolutionMaterial;
 }
 
 export class DIDCommContext {
@@ -129,14 +156,13 @@ export class DIDCommContext {
     readonly did: string,
     didDoc: DIDDoc,
     secrets: Secret[],
-    { aliases = [], pinned = [] }: ContextOptions = {}
+    { aliases = [], pinned = [], resolutionMaterial }: ContextOptions = {}
   ) {
     this.dids = [did, ...aliases.map((alias) => alias.did)];
-    this.didResolver = new ChainedResolver([
-      didDoc,
-      ...aliases.map((alias) => alias.didDoc),
-      ...pinned,
-    ]);
+    this.didResolver = new ChainedResolver(
+      [didDoc, ...aliases.map((alias) => alias.didDoc), ...pinned],
+      resolutionMaterial ?? null
+    );
     this.secretsResolver = new InMemorySecretsResolver(secrets);
   }
 

@@ -1,12 +1,23 @@
 import { randomUUID } from "node:crypto";
+import bs58 from "bs58";
+import canonicalize from "canonicalize";
+import {
+  base64urlToBytes,
+  encodeLongForm,
+  longToShort,
+  resolveLongForm,
+  resolveShortForm,
+  toDIDCommDIDDoc,
+} from "@estoc/did-peer";
+import type { Secret } from "@estoc/did-peer";
 import { Message } from "@estoc/didcomm-node";
-import { FlattenedEncrypt, importJWK } from "jose";
+import { CompactSign, FlattenedEncrypt, importJWK, type JWK } from "jose";
 import type { IMessage } from "@estoc/didcomm-node";
 
 import type { MediatorConfig } from "../src/config.js";
 import { DIDCommContext } from "../src/didcomm/didcomm.js";
 import { resolveDIDCommDoc } from "../src/didcomm/did-resolver.js";
-import { mintIdentity, type MediatorIdentity } from "../src/identity-core.js";
+import { mintIdentity, mintSecrets, type MediatorIdentity } from "../src/identity-core.js";
 import { SqliteStore } from "../src/store/sqlite.js";
 
 export const TEST_CONFIG: MediatorConfig = {
@@ -25,6 +36,11 @@ export const TEST_CONFIG: MediatorConfig = {
   blobQuotaBytes: 6000,
   abuseEmail: "abuse@mediator.test",
   blobDir: null,
+  replicaMediation: true,
+  maxActiveReplicas: 3,
+  maxMembershipPage: 2,
+  maxSharedRecipients: 4,
+  maxRetainedBytes: 256 * 1024,
 };
 
 export function memoryStore(): SqliteStore {
@@ -122,4 +138,84 @@ export async function sealRaw(raw: string, to: MediatorIdentity): Promise<string
     .encrypt(await importJWK({ kty, crv, x }, "ECDH-ES+A256KW"));
   const { header, encrypted_key, ...rest } = jwe;
   return JSON.stringify({ ...rest, recipients: [{ header, encrypted_key }] });
+}
+
+/**
+ * A did:peer:4 the way a vault mints one: a Multikey per use, authentication
+ * first, and a DIDComm service at `service` when it has one.
+ */
+export interface Peer4Agent {
+  did: string;
+  longForm: string;
+  /** Speaks as the long form: what a first contact must do. */
+  ctx: DIDCommContext;
+  /** Speaks as the short form: resolvable only by who kept the long one. */
+  shortCtx: DIDCommContext;
+  signingKey: JWK;
+}
+
+const MULTICODEC = { Ed25519: [0xed, 0x01], X25519: [0xec, 0x01] };
+
+function multikey(jwk: Record<string, unknown>): string {
+  const prefix = MULTICODEC[jwk.crv as keyof typeof MULTICODEC];
+  return `z${bs58.encode(Uint8Array.from([...prefix, ...base64urlToBytes(jwk.x as string)]))}`;
+}
+
+export async function peer4Agent(service: string | null): Promise<Peer4Agent> {
+  const [agreement, signing] = (await mintSecrets()).map(
+    (secret) => secret.privateKeyJwk as Record<string, unknown>
+  );
+  const longForm = encodeLongForm({
+    "@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"],
+    verificationMethod: [
+      { id: "#key-1", type: "Multikey", publicKeyMultibase: multikey(signing) },
+      { id: "#key-2", type: "Multikey", publicKeyMultibase: multikey(agreement) },
+    ],
+    authentication: ["#key-1"],
+    keyAgreement: ["#key-2"],
+    ...(service === null
+      ? {}
+      : {
+          service: [
+            {
+              id: "#service",
+              type: "DIDCommMessaging",
+              serviceEndpoint: { uri: service, accept: ["didcomm/v2"] },
+            },
+          ],
+        }),
+  });
+  const did = longToShort(longForm);
+  const secretsAs = (name: string): Secret[] => [
+    { id: `${name}#key-1`, type: "JsonWebKey2020", privateKeyJwk: signing },
+    { id: `${name}#key-2`, type: "JsonWebKey2020", privateKeyJwk: agreement },
+  ];
+  return {
+    did,
+    longForm,
+    ctx: new DIDCommContext(
+      longForm,
+      toDIDCommDIDDoc(resolveLongForm(longForm)),
+      secretsAs(longForm)
+    ),
+    shortCtx: new DIDCommContext(
+      did,
+      toDIDCommDIDDoc(resolveShortForm(longForm)),
+      secretsAs(did)
+    ),
+    signingKey: signing as JWK,
+  };
+}
+
+export const GRANT_TYP = "estoc/replica-grant+jws";
+
+/** A compact JWS over `payload` in its RFC 8785 form, as `signer`'s authentication key. */
+export async function signedBy(
+  signer: Peer4Agent,
+  payload: unknown,
+  header: Record<string, unknown> = {}
+): Promise<string> {
+  return new CompactSign(new TextEncoder().encode(canonicalize(payload)))
+    .setProtectedHeader({ alg: "EdDSA", typ: GRANT_TYP, kid: `${signer.did}#key-1`, ...header })
+    .sign(await importJWK(signer.signingKey, "EdDSA"));
 }

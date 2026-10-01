@@ -45,6 +45,7 @@ export function buildServer({
 }: ServerOptions): MediatorServer {
   const ctx = new DIDCommContext(identity.did, identity.didDoc, identity.secrets, {
     aliases: identity.aliases,
+    resolutionMaterial: (did) => store.resolutionMaterial(did),
   });
   const sessions = new Sessions();
   const blobs =

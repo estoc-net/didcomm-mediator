@@ -4,6 +4,7 @@ import { BlobService } from "../blobs/service.js";
 import {
   DEFAULT_MAX_MESSAGE_BYTES,
   blobPolicyFrom,
+  replicaPolicyFrom,
   parseDidMethods,
   type MediatorPolicy,
 } from "../config.js";
@@ -31,6 +32,12 @@ export interface Env {
   MEDIATOR_BLOB_RETAIN_SECONDS?: string;
   MEDIATOR_BLOB_MAX_BYTES?: string;
   MEDIATOR_BLOB_QUOTA_BYTES?: string;
+  /** "true" turns replica-mediation/1.0 on. */
+  MEDIATOR_REPLICA_MEDIATION?: string;
+  MEDIATOR_MAX_ACTIVE_REPLICAS?: string;
+  MEDIATOR_MAX_MEMBERSHIP_PAGE?: string;
+  MEDIATOR_MAX_SHARED_RECIPIENTS?: string;
+  MEDIATOR_MAX_RETAINED_BYTES?: string;
   /** Abuse contact for the invitation page's footer; unset = no footer. */
   MEDIATOR_ABUSE_EMAIL?: string;
 }
@@ -51,6 +58,7 @@ export function policyFromEnv(env: Env): MediatorPolicy {
     maxMessagesPerAccount: Number(env.MEDIATOR_MAX_MESSAGES_PER_ACCOUNT ?? 1000),
     maxMessageBytes: Number(env.MEDIATOR_MAX_MESSAGE_BYTES ?? DEFAULT_MAX_MESSAGE_BYTES),
     ...blobPolicyFrom((name) => env[name as keyof Env] as string | undefined),
+    ...replicaPolicyFrom((name) => env[name as keyof Env] as string | undefined),
     // `||` on purpose: an empty string means unset, same as Node's env().
     abuseEmail: env.MEDIATOR_ABUSE_EMAIL || null,
   };
@@ -101,6 +109,7 @@ export async function depsForOrigin(env: Env, origin: string): Promise<WorkerDep
     identity,
     ctx: new DIDCommContext(identity.did, identity.didDoc, identity.secrets, {
       aliases: identity.aliases,
+      resolutionMaterial: (did) => store.resolutionMaterial(did),
     }),
     store,
     policy,

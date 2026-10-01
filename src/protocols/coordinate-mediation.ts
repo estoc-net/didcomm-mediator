@@ -36,7 +36,7 @@ const QUERY_PAGE_LIMIT = 100;
  * active DID, plus the short form of a long-form did:peer:4, which hashes to
  * the same document and must be just as unbindable.
  */
-function isMediatorOwnDid(did: string, mediatorDids: string[]): boolean {
+export function isMediatorOwnDid(did: string, mediatorDids: string[]): boolean {
   return mediatorDids.some(
     (own) => own === did || (isLongForm(own) && longToShort(own) === did)
   );
@@ -54,7 +54,10 @@ export async function mediateRequest(
     return { type: MEDIATE_DENY, body: {} };
   }
 
-  await store.grantMediation(sender);
+  // A DID that is a replica-mediation account or replica stays that.
+  if (!(await store.grantMediation(sender))) {
+    return { type: MEDIATE_DENY, body: {} };
+  }
   // The spec's routing_did is an array — 3.0 renamed and pluralized it.
   // Grant the DID the client addressed: that is the one its resolver speaks.
   return {

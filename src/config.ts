@@ -32,6 +32,17 @@ export interface MediatorPolicy {
   blobMaxBytes: number;
   blobQuotaBytes: number;
   /**
+   * replica-mediation/1.0. Off, its message types are unsupported and
+   * nothing is advertised. The limits are the ones a registration discloses; an
+   * account's mail is further bound by `messageTtlSeconds`,
+   * `maxMessagesPerAccount` and `maxMessageBytes`.
+   */
+  replicaMediation: boolean;
+  maxActiveReplicas: number;
+  maxMembershipPage: number;
+  maxSharedRecipients: number;
+  maxRetainedBytes: number;
+  /**
    * The operator's abuse contact, shown in the footer of the human-facing
    * invitation page. Null means no contact line is rendered.
    */
@@ -82,6 +93,16 @@ export function blobPolicyFrom(get: (name: string) => string | undefined) {
   };
 }
 
+export function replicaPolicyFrom(get: (name: string) => string | undefined) {
+  return {
+    replicaMediation: get("MEDIATOR_REPLICA_MEDIATION") === "true",
+    maxActiveReplicas: Number(get("MEDIATOR_MAX_ACTIVE_REPLICAS") ?? 16),
+    maxMembershipPage: Number(get("MEDIATOR_MAX_MEMBERSHIP_PAGE") ?? 16),
+    maxSharedRecipients: Number(get("MEDIATOR_MAX_SHARED_RECIPIENTS") ?? 10000),
+    maxRetainedBytes: Number(get("MEDIATOR_MAX_RETAINED_BYTES") ?? 64 * 1024 * 1024),
+  };
+}
+
 function env(name: string): string | undefined {
   const value = process.env[name];
   return value === undefined || value === "" ? undefined : value;
@@ -127,6 +148,7 @@ export function configFromEnv(): MediatorConfig {
     maxMessagesPerAccount: Number(env("MEDIATOR_MAX_MESSAGES_PER_ACCOUNT") ?? 1000),
     maxMessageBytes: Number(env("MEDIATOR_MAX_MESSAGE_BYTES") ?? DEFAULT_MAX_MESSAGE_BYTES),
     ...blobPolicyFrom(env),
+    ...replicaPolicyFrom(env),
     abuseEmail: env("MEDIATOR_ABUSE_EMAIL") ?? null,
     // "off" disables blobs; unset means a directory beside the database.
     blobDir:
