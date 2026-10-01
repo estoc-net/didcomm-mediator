@@ -151,6 +151,8 @@ export interface Peer4Agent {
   ctx: DIDCommContext;
   /** Speaks as the short form: resolvable only by who kept the long one. */
   shortCtx: DIDCommContext;
+  /** Seals with the long form's keys while writing `did` as the sender. */
+  claiming(did: string): DIDCommContext;
   signingKey: JWK;
 }
 
@@ -209,6 +211,12 @@ export async function peer4Agent(
       toDIDCommDIDDoc(resolveShortForm(longForm)),
       secretsAs(did)
     ),
+    claiming: (claimed) =>
+      new DIDCommContext(
+        claimed,
+        { ...toDIDCommDIDDoc(resolveLongForm(longForm)), id: claimed },
+        secretsAs(longForm)
+      ),
     signingKey: signing as JWK,
   };
 }

@@ -119,6 +119,12 @@ async function enrollment(
   return { replica, replicaId, payload, grant: await signedBy(of, payload) };
 }
 
+/** A long form in shape only: `short` followed by a document it does not commit to. */
+async function mismatchedLongForm(short: string): Promise<string> {
+  const other = (await peer4Agent(null)).longForm;
+  return `${short}${other.slice(other.lastIndexOf(":"))}`;
+}
+
 async function register(grant: string, speaker: Speaker = firstContact(account)) {
   return send(speaker, REGISTER, { grant });
 }
@@ -255,6 +261,11 @@ describe("register", () => {
       await refused(await signedBy(replica, payload));
     });
 
+    it("whose key ID spells the account as a long form of another document", async () => {
+      const { payload } = await enrollment();
+      await refused(await signedBy(account, payload, { kid: `${await mismatchedLongForm(account.did)}#key-1` }));
+    });
+
     it("signed for another account", async () => {
       const other = await peer4Agent(null);
       const { grant } = await enrollment(other);
@@ -333,8 +344,7 @@ describe("register", () => {
       mediator = await mintIdentity(TEST_CONFIG.publicUrl, ["peer4"]);
       app = serve();
       const short = longToShort(mediator.did);
-      const other = (await peer4Agent(null)).longForm;
-      const mismatched = `${short}${other.slice(other.lastIndexOf(":"))}`;
+      const mismatched = await mismatchedLongForm(short);
 
       const [named, served] = [
         await enrollment(account, { mediator: mismatched }, short),
@@ -395,6 +405,22 @@ describe("register", () => {
       ).toString("base64url");
       await refused(`${header}.${altered}.${signature}`);
     });
+  });
+
+  it("takes the account's key ID in its long form", async () => {
+    const { payload } = await enrollment();
+    const grant = await signedBy(account, payload, { kid: `${account.longForm}#key-1` });
+    expect((await register(grant))?.type).toBe(REGISTERED);
+  });
+
+  it("refuses a request that names its sender as a long form of another document", async () => {
+    const { grant } = await enrollment();
+    const claimed = await mismatchedLongForm(account.did);
+    await expectProblem(
+      await send({ did: claimed, ctx: account.claiming(claimed) }, REGISTER, { grant }),
+      "invalid-message"
+    );
+    await expectProblem(await roster(firstContact(account)), "unknown-account");
   });
 
   it("refuses a request whose body or addressing is not exactly a registration", async () => {

@@ -57,7 +57,7 @@ export function canonicalDid(did: string): string {
  * The same spelling for a DID nothing has resolved yet, or null when it is a
  * long form whose document is not the one its short form commits to.
  */
-function provenDid(did: string): string | null {
+export function provenDid(did: string): string | null {
   if (!isLongForm(did)) {
     return did;
   }
@@ -145,7 +145,7 @@ async function holdsKeys(
  */
 function authenticationKey(doc: DIDDoc, kid: string): Record<string, unknown> | null {
   const [did, fragment, ...rest] = kid.split("#");
-  if (fragment === undefined || rest.length > 0 || canonicalDid(did) !== canonicalDid(doc.id)) {
+  if (fragment === undefined || rest.length > 0 || provenDid(did) !== canonicalDid(doc.id)) {
     return null;
   }
   const id = `${doc.id}#${fragment}`;

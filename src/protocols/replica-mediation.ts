@@ -7,7 +7,7 @@ import { isMediatorOwnDid } from "./coordinate-mediation.js";
 import { DELIVERY_PAGE_LIMIT } from "./pickup.js";
 import { REPLICA_MEDIATION_PROTOCOL } from "./discover-features.js";
 import { PROBLEM_REPORT } from "./problem-report.js";
-import { canonicalDid, verifyReplicaGrant } from "./replica-grant.js";
+import { canonicalDid, provenDid, verifyReplicaGrant } from "./replica-grant.js";
 
 /**
  * replica-mediation/1.0 — https://estoc.dev/replica-mediation/1.0
@@ -80,7 +80,7 @@ function controlOf(
     metadata.authenticated !== true ||
     !metadata.encrypted_from_kid ||
     typeof message.from !== "string" ||
-    canonicalDid(message.from) !== canonicalDid(sender) ||
+    provenDid(message.from) !== canonicalDid(sender) ||
     addressedTo === null ||
     !ctx.dids.includes(addressedTo) ||
     message.to?.length !== 1 ||
