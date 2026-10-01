@@ -178,6 +178,11 @@ Over a WebSocket there is no status: a refused forward is dropped.
 | `MEDIATOR_MESSAGE_TTL_SECONDS` | 7 days | Unclaimed messages expire |
 | `MEDIATOR_MAX_MESSAGES_PER_ACCOUNT` | `1000` | Inbox quota. Advertised as `maxMessagesPerAccount` in `GET /` |
 | `MEDIATOR_MAX_MESSAGE_BYTES` | `1048576` (1 MiB) | Largest envelope accepted on the wire; larger gets HTTP 413 (dropped on a socket). Advertised as `maxMessageBytes` in `GET /` |
+| `MEDIATOR_REPLICA_MEDIATION` | `false` | `true` turns on replica-mediation/1.0 (accounts and replica enrollment so far; no mail is routed to replicas yet) |
+| `MEDIATOR_MAX_ACTIVE_REPLICAS` | `16` | Replicas one replica-mediation account may enroll; enrollment is never undone. This and the three limits below must be positive integers, or the mediator refuses to start |
+| `MEDIATOR_MAX_MEMBERSHIP_PAGE` | `16` | Largest page of a replica listing |
+| `MEDIATOR_MAX_SHARED_RECIPIENTS` | `10000` | Disclosed to replica-mediation accounts; not enforced yet |
+| `MEDIATOR_MAX_RETAINED_BYTES` | `67108864` (64 MiB) | Disclosed to replica-mediation accounts; not enforced yet |
 | `MEDIATOR_ABUSE_EMAIL` | unset | Abuse contact shown in the invitation page's footer |
 | `MEDIATOR_BLOB_DIR` | `<data dir>/blobs` (Node only) | Where blob-store/1.0 keeps blob bytes; `off` disables blobs. On Workers, blobs are on iff an R2 bucket is bound as `BLOBS` |
 | `MEDIATOR_BLOB_RETAIN_SECONDS` | 30 days | How long one `put` keeps a blob; a repeat `put` by the same mediation renews |

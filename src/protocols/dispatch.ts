@@ -25,6 +25,7 @@ import { QUERIES, queries } from "./discover-features.js";
 import { PING, ping } from "./trust-ping.js";
 import { PROBLEM_REPORT } from "./problem-report.js";
 import { BLOB_DELETE, BLOB_PUT, blobDelete, blobPut } from "./blob-store.js";
+import { LIST, REGISTER, list, register } from "./replica-mediation.js";
 
 const HANDLERS: Record<string, Handler> = {
   [MEDIATE_REQUEST]: mediateRequest,
@@ -39,6 +40,11 @@ const HANDLERS: Record<string, Handler> = {
   [PING]: ping,
   [BLOB_PUT]: blobPut,
   [BLOB_DELETE]: blobDelete,
+};
+
+const REPLICA_MEDIATION_HANDLERS: Record<string, Handler> = {
+  [REGISTER]: register,
+  [LIST]: list,
 };
 
 /**
@@ -82,8 +88,9 @@ function returnRouteOpen(incoming: Unpacked, { session }: HandlerContext): boole
  * Open envelope in, sealed reply out (or null when the exchange is one-way).
  *
  * The reply's threading and addressing are decided here for every handler at
- * once: thid continues the incoming thread, a problem-report also carries
- * pthid, and the reply is sealed to the DID the envelope *proved*, never the
+ * once: thid continues the incoming thread, or names the request itself
+ * where the protocol answers each request on its own, a problem-report also
+ * carries pthid, and the reply is sealed to the DID the envelope *proved*, never the
  * one the plaintext claimed.
  */
 export async function dispatch(
@@ -91,7 +98,11 @@ export async function dispatch(
   context: HandlerContext
 ): Promise<string | null> {
   const routed = returnRouteOpen(incoming, context);
-  const handler = HANDLERS[incoming.message.type] ?? unknownType;
+  const { type } = incoming.message;
+  const replicaControl = context.config.replicaMediation
+    ? REPLICA_MEDIATION_HANDLERS[type]
+    : undefined;
+  const handler = HANDLERS[type] ?? replicaControl ?? unknownType;
   const reply = await handler(incoming, context);
 
   const replyTo = context.sender;
@@ -100,7 +111,12 @@ export async function dispatch(
     return null;
   }
 
-  const thid = incoming.message.thid ?? incoming.message.id;
+  // A replica control's reply is matched to its request by the request's ID
+  // alone, whatever thread the request itself sat in.
+  const thid =
+    replicaControl !== undefined
+      ? incoming.message.id
+      : (incoming.message.thid ?? incoming.message.id);
   // Reply as the DID the sender addressed: a mediator answering to several
   // names must not reveal the others, and the sender's resolver may only
   // know the one it used.

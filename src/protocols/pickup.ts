@@ -4,6 +4,8 @@ import type { DIDCommContext, Unpacked } from "../didcomm/didcomm.js";
 import type { StoredMessage } from "../store/types.js";
 import type { HandlerContext, LiveSink, Reply } from "./types.js";
 import { PROBLEM_REPORT } from "./problem-report.js";
+import { canonicalDid } from "./replica-grant.js";
+import { replicaProblem } from "./replica-mediation.js";
 
 /**
  * messagepickup/3.0 — https://didcomm.org/messagepickup/3.0
@@ -27,7 +29,7 @@ export const MESSAGES_RECEIVED =
 export const LIVE_DELIVERY_CHANGE =
   "https://didcomm.org/messagepickup/3.0/live-delivery-change";
 
-const DELIVERY_PAGE_LIMIT = 10;
+export const DELIVERY_PAGE_LIMIT = 10;
 
 async function statusBody(
   { store, session, sender }: HandlerContext,
@@ -44,10 +46,24 @@ async function requireAccount({ store, sender }: HandlerContext): Promise<boolea
   return sender !== null && (await store.isMediated(sender));
 }
 
+/**
+ * A replica-mediation account manages its replicas and holds no queue: mail
+ * is picked up by each replica under its own DID, and the account is told so.
+ */
+async function accountHasNoInbox({ store, sender }: HandlerContext): Promise<Reply | null> {
+  return sender !== null && (await store.isReplicaAccount(canonicalDid(sender)))
+    ? replicaProblem("replica-required")
+    : null;
+}
+
 export async function statusRequest(
   incoming: Unpacked,
   context: HandlerContext
 ): Promise<Reply | null> {
+  const refusal = await accountHasNoInbox(context);
+  if (refusal !== null) {
+    return refusal;
+  }
   if (!(await requireAccount(context))) {
     return null;
   }
@@ -69,6 +85,10 @@ export async function deliveryRequest(
   incoming: Unpacked,
   context: HandlerContext
 ): Promise<Reply | null> {
+  const refusal = await accountHasNoInbox(context);
+  if (refusal !== null) {
+    return refusal;
+  }
   if (!(await requireAccount(context)) || context.sender === null) {
     return null;
   }
@@ -99,6 +119,10 @@ export async function messagesReceived(
   incoming: Unpacked,
   context: HandlerContext
 ): Promise<Reply | null> {
+  const refusal = await accountHasNoInbox(context);
+  if (refusal !== null) {
+    return refusal;
+  }
   if (!(await requireAccount(context)) || context.sender === null) {
     return null;
   }
@@ -116,6 +140,10 @@ export async function liveDeliveryChange(
   incoming: Unpacked,
   context: HandlerContext
 ): Promise<Reply | null> {
+  const refusal = await accountHasNoInbox(context);
+  if (refusal !== null) {
+    return refusal;
+  }
   if (!(await requireAccount(context))) {
     return null;
   }

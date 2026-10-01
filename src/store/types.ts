@@ -4,8 +4,9 @@
  *
  * An account is a DID that asked for mediation and was granted it — existence
  * of the row is the grant. A keylist entry binds a recipient DID to exactly
- * one owner account; the binding is exclusive, first-come, and the ownership
- * checks live in the protocol layer, not here.
+ * one owner account; the binding is exclusive and first-come. Who is asking
+ * is the protocol layer's to prove; that a DID is bound once, under one
+ * protocol only, is kept here, inside the write that binds it.
  *
  * Every method is async because the least capable backend sets the contract:
  * Cloudflare D1 has no synchronous API, and the protocol layer is shared.
@@ -37,6 +38,50 @@ export interface PackageKey {
 export type StoreOutcome =
   | { outcome: "stored"; message: StoredMessage }
   | { outcome: "repeated" | "conflict" | "full" };
+
+/**
+ * One replica's enrollment in a replica-mediation account. Both DIDs are
+ * did:peer:4 short forms; the long forms are what resolves them later.
+ */
+export interface ReplicaRegistration {
+  accountDid: string;
+  accountLongForm: string;
+  mediationId: string;
+  /** The mediator DID the account is bound to, a did:peer:4 in its short form. */
+  mediator: string;
+  replicaId: string;
+  replicaDid: string;
+  replicaLongForm: string;
+  grant: string;
+  /** Whether an absent account may be created by this registration. */
+  createAccount: boolean;
+  maxReplicas: number;
+}
+
+/**
+ * `registered` also answers an exact repeat, with the time of the first.
+ * `refused`: the account is absent and may not be created. `conflict`: an ID
+ * or DID is already bound otherwise, here or under ordinary mediation, or the
+ * account is bound to another mediation ID or mediator DID.
+ * `full`: the account is at its replica limit. Only `registered` wrote
+ * anything, and it wrote the account and the replica together or neither.
+ */
+export type RegisterOutcome =
+  | { outcome: "registered"; registeredTime: number }
+  | { outcome: "refused" | "conflict" | "full" };
+
+export interface RosterEntry {
+  /** The replica's place in the order its account enrolled them, from 1. */
+  ordinal: number;
+  grant: string;
+  registeredTime: number;
+}
+
+export interface RosterPage {
+  /** How many replicas the account holds now. */
+  size: number;
+  entries: RosterEntry[];
+}
 
 export interface RecipientPage {
   recipients: string[];
@@ -76,7 +121,11 @@ export interface MediationStore {
    */
   initIdentity(secretsJson: string): Promise<string>;
 
-  grantMediation(did: string): Promise<void>;
+  /**
+   * Grants `did` an ordinary account unless it is a replica-mediation
+   * account or replica; whether it holds an ordinary account afterwards.
+   */
+  grantMediation(did: string): Promise<boolean>;
   revokeMediation(did: string): Promise<void>;
   isMediated(did: string): Promise<boolean>;
 
@@ -89,6 +138,29 @@ export interface MediationStore {
   ): Promise<RecipientPage>;
   /** The account a recipient DID routes to, if any. */
   ownerOf(recipientDid: string): Promise<string | null>;
+
+  /*
+   * replica-mediation/1.0. An account and its replicas are append-only, and
+   * their DIDs are kept apart from ordinary accounts and recipients in both
+   * directions: neither kind of binding can be made over the other.
+   */
+  registerReplica(registration: ReplicaRegistration): Promise<RegisterOutcome>;
+  /** Whether `did` is a replica-mediation account. */
+  isReplicaAccount(did: string): Promise<boolean>;
+  /**
+   * The account's replicas with an ordinal after `after` and up to `through`
+   * (its current size when null), oldest first; null without such an account
+   * bound to `mediator`.
+   */
+  replicaRoster(
+    accountDid: string,
+    mediator: string,
+    after: number,
+    through: number | null,
+    limit: number
+  ): Promise<RosterPage | null>;
+  /** The long form of a replica-mediation account or replica DID, if `did` is one. */
+  resolutionMaterial(did: string): Promise<string | null>;
 
   /** Queues `packed` under its key, once: the first bytes a key is given are the ones it keeps. */
   storeMessage(ownerDid: string, key: PackageKey, packed: string): Promise<StoreOutcome>;

@@ -146,7 +146,10 @@ export function buildApp({
     // Every name this mediator answers to; `did` is the advertised one.
     dids: ctx.dids,
     invitationUrl: oobUrl,
-    protocols: supportedProtocols(blobs !== null),
+    protocols: supportedProtocols({
+      blobs: blobs !== null,
+      replicaMediation: policy.replicaMediation,
+    }),
     // The wire ceiling, so a client can size an envelope before sending it.
     maxMessageBytes: policy.maxMessageBytes,
     maxMessagesPerAccount: policy.maxMessagesPerAccount,

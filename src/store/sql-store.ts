@@ -14,12 +14,17 @@
  * call retries from scratch.
  */
 
+import { isLongForm, longToShort } from "@estoc/did-peer";
+
 import type {
   AddRecipientResult,
   BlobRow,
   MediationStore,
   PackageKey,
   RecipientPage,
+  RegisterOutcome,
+  ReplicaRegistration,
+  RosterPage,
   StoredMessage,
   StoreOutcome,
   UploadGrant,
@@ -99,6 +104,24 @@ const SCHEMA = [
      blob_id    TEXT NOT NULL REFERENCES blobs(id) ON DELETE CASCADE,
      expires_at INTEGER NOT NULL
    )`,
+  `CREATE TABLE IF NOT EXISTS replica_accounts (
+     did          TEXT PRIMARY KEY,
+     mediation_id TEXT NOT NULL,
+     mediator     TEXT NOT NULL,
+     long_form    TEXT NOT NULL,
+     created_at   INTEGER NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS replicas (
+     replica_did   TEXT PRIMARY KEY,
+     account_did   TEXT NOT NULL REFERENCES replica_accounts(did),
+     replica_id    TEXT NOT NULL,
+     ordinal       INTEGER NOT NULL,
+     long_form     TEXT NOT NULL,
+     grant_jws     TEXT NOT NULL,
+     registered_at INTEGER NOT NULL,
+     UNIQUE (account_did, replica_id),
+     UNIQUE (account_did, ordinal)
+   )`,
   `CREATE TABLE IF NOT EXISTS identity (
      id         INTEGER PRIMARY KEY CHECK (id = 1),
      secrets    TEXT NOT NULL,
@@ -115,6 +138,22 @@ const MESSAGE_KEY_COLUMNS = ["next_did", "forward_id"];
 const MESSAGE_KEY_INDEX =
   "CREATE UNIQUE INDEX IF NOT EXISTS messages_package " +
   "ON messages(owner_did, next_did, forward_id)";
+
+/**
+ * The spellings one DID may be bound under. Ordinary mediation keeps a DID
+ * as its holder wrote it, so a did:peer:4 can sit there in its long form
+ * while replica mediation keeps the short one.
+ */
+function spellings(did: string, longForm?: string): [string, string] {
+  return [did, longForm ?? (isLongForm(did) ? longToShort(did) : did)];
+}
+
+const NOT_ORDINARY =
+  "NOT EXISTS (SELECT 1 FROM accounts WHERE did IN (?, ?)) " +
+  "AND NOT EXISTS (SELECT 1 FROM keylist WHERE recipient_did IN (?, ?))";
+const NOT_REPLICA_MEDIATION =
+  "NOT EXISTS (SELECT 1 FROM replica_accounts WHERE did IN (?, ?)) " +
+  "AND NOT EXISTS (SELECT 1 FROM replicas WHERE replica_did IN (?, ?))";
 
 export class SqlStore implements MediationStore {
   private ttlMs: number;
@@ -225,11 +264,18 @@ export class SqlStore implements MediationStore {
     return winner;
   }
 
-  async grantMediation(did: string): Promise<void> {
-    await this.run(
-      "INSERT OR IGNORE INTO accounts (did, created_at) VALUES (?, ?)",
-      [did, Date.now()]
-    );
+  async grantMediation(did: string): Promise<boolean> {
+    const names = spellings(did);
+    const [, held] = await this.batch([
+      {
+        sql:
+          "INSERT OR IGNORE INTO accounts (did, created_at) " +
+          `SELECT ?, ? WHERE ${NOT_REPLICA_MEDIATION}`,
+        params: [did, Date.now(), ...names, ...names],
+      },
+      { sql: "SELECT 1 AS one FROM accounts WHERE did = ?", params: [did] },
+    ]);
+    return held.rows.length > 0;
   }
 
   async revokeMediation(did: string): Promise<void> {
@@ -248,20 +294,29 @@ export class SqlStore implements MediationStore {
     ownerDid: string,
     recipientDid: string
   ): Promise<AddRecipientResult> {
-    const existing = await this.first<{ owner_did: string }>(
-      "SELECT owner_did FROM keylist WHERE recipient_did = ?",
-      [recipientDid]
-    );
+    const names = spellings(recipientDid);
+    const owner = {
+      sql: "SELECT owner_did FROM keylist WHERE recipient_did = ?",
+      params: [recipientDid],
+    };
+    const [before, , after] = await this.batch([
+      owner,
+      {
+        sql:
+          "INSERT INTO keylist (recipient_did, owner_did, created_at) " +
+          `SELECT ?, ?, ? WHERE ${NOT_REPLICA_MEDIATION} ` +
+          "ON CONFLICT (recipient_did) DO NOTHING",
+        params: [recipientDid, ownerDid, Date.now(), ...names, ...names],
+      },
+      owner,
+    ]);
 
-    if (existing !== null) {
-      return existing.owner_did === ownerDid ? "already-yours" : "taken";
+    const ownerIn = (result: SqlResult) =>
+      (result.rows as { owner_did: string }[])[0]?.owner_did ?? null;
+    if (ownerIn(after) !== ownerDid) {
+      return "taken";
     }
-
-    await this.run(
-      "INSERT INTO keylist (recipient_did, owner_did, created_at) VALUES (?, ?, ?)",
-      [recipientDid, ownerDid, Date.now()]
-    );
-    return "added";
+    return ownerIn(before) === ownerDid ? "already-yours" : "added";
   }
 
   async removeRecipient(
@@ -310,6 +365,165 @@ export class SqlStore implements MediationStore {
       [recipientDid]
     );
     return row?.owner_did ?? null;
+  }
+
+  /*
+   * One transaction. The account is created only if the replica's own insert
+   * is going to pass too, so no account is ever left without a replica; the
+   * rows read back afterwards say which of the outcomes it was.
+   */
+  async registerReplica({
+    accountDid,
+    accountLongForm,
+    mediationId,
+    mediator,
+    replicaId,
+    replicaDid,
+    replicaLongForm,
+    grant,
+    createAccount,
+    maxReplicas,
+  }: ReplicaRegistration): Promise<RegisterOutcome> {
+    const now = Date.now();
+    const account = spellings(accountDid, accountLongForm);
+    const replica = spellings(replicaDid, replicaLongForm);
+    const replicaIsNoAccount = "NOT EXISTS (SELECT 1 FROM replica_accounts WHERE did = ?)";
+    const size = "(SELECT COUNT(*) FROM replicas WHERE account_did = ?)";
+
+    const [, , accounts, bound, members] = await this.batch([
+      {
+        sql:
+          "INSERT INTO replica_accounts (did, mediation_id, mediator, long_form, created_at) " +
+          `SELECT ?, ?, ?, ?, ? WHERE ? = 1 AND ? > 0 AND ${NOT_ORDINARY} AND ${NOT_ORDINARY} ` +
+          `AND ${replicaIsNoAccount} ` +
+          "AND NOT EXISTS (SELECT 1 FROM replicas WHERE replica_did IN (?, ?)) " +
+          "ON CONFLICT (did) DO NOTHING",
+        params: [
+          accountDid,
+          mediationId,
+          mediator,
+          accountLongForm,
+          now,
+          createAccount ? 1 : 0,
+          maxReplicas,
+          ...account,
+          ...account,
+          ...replica,
+          ...replica,
+          replicaDid,
+          accountDid,
+          replicaDid,
+        ],
+      },
+      {
+        sql:
+          "INSERT INTO replicas " +
+          "(replica_did, account_did, replica_id, ordinal, long_form, grant_jws, registered_at) " +
+          `SELECT ?, ?, ?, ${size} + 1, ?, ?, ? ` +
+          "WHERE EXISTS (SELECT 1 FROM replica_accounts " +
+          "WHERE did = ? AND mediation_id = ? AND mediator = ?) " +
+          `AND ${NOT_ORDINARY} AND ${replicaIsNoAccount} AND ${size} < ? ` +
+          "ON CONFLICT DO NOTHING",
+        params: [
+          replicaDid,
+          accountDid,
+          replicaId,
+          accountDid,
+          replicaLongForm,
+          grant,
+          Math.floor(now / 1000),
+          accountDid,
+          mediationId,
+          mediator,
+          ...replica,
+          ...replica,
+          replicaDid,
+          accountDid,
+          maxReplicas,
+        ],
+      },
+      {
+        sql: "SELECT mediation_id, mediator FROM replica_accounts WHERE did = ?",
+        params: [accountDid],
+      },
+      {
+        sql: "SELECT account_did, replica_id, registered_at FROM replicas WHERE replica_did = ?",
+        params: [replicaDid],
+      },
+      { sql: "SELECT replica_id FROM replicas WHERE account_did = ?", params: [accountDid] },
+    ]);
+
+    const held = (accounts.rows as { mediation_id: string; mediator: string }[])[0];
+    if (held === undefined) {
+      if (!createAccount) {
+        return { outcome: "refused" };
+      }
+      return { outcome: maxReplicas > 0 ? "conflict" : "full" };
+    }
+    if (held.mediation_id !== mediationId || held.mediator !== mediator) {
+      return { outcome: "conflict" };
+    }
+
+    const binding = (
+      bound.rows as { account_did: string; replica_id: string; registered_at: number }[]
+    )[0];
+    if (binding !== undefined) {
+      return binding.account_did === accountDid && binding.replica_id === replicaId
+        ? { outcome: "registered", registeredTime: binding.registered_at }
+        : { outcome: "conflict" };
+    }
+
+    const ids = (members.rows as { replica_id: string }[]).map((row) => row.replica_id);
+    return { outcome: !ids.includes(replicaId) && ids.length >= maxReplicas ? "full" : "conflict" };
+  }
+
+  async isReplicaAccount(did: string): Promise<boolean> {
+    const row = await this.first("SELECT 1 AS one FROM replica_accounts WHERE did = ?", [did]);
+    return row !== null;
+  }
+
+  async replicaRoster(
+    accountDid: string,
+    mediator: string,
+    after: number,
+    through: number | null,
+    limit: number
+  ): Promise<RosterPage | null> {
+    const ofAccount =
+      "account_did = (SELECT did FROM replica_accounts WHERE did = ? AND mediator = ?)";
+    const [count, page] = await this.batch([
+      {
+        sql: `SELECT COUNT(*) AS n FROM replicas WHERE ${ofAccount}`,
+        params: [accountDid, mediator],
+      },
+      {
+        sql:
+          "SELECT ordinal, grant_jws, registered_at FROM replicas " +
+          `WHERE ${ofAccount} AND ordinal > ? AND (? IS NULL OR ordinal <= ?) ` +
+          "ORDER BY ordinal LIMIT ?",
+        params: [accountDid, mediator, after, through, through, limit],
+      },
+    ]);
+
+    const size = (count.rows as { n: number }[])[0].n;
+    if (size === 0) {
+      return null;
+    }
+    return {
+      size,
+      entries: (page.rows as { ordinal: number; grant_jws: string; registered_at: number }[]).map(
+        (row) => ({ ordinal: row.ordinal, grant: row.grant_jws, registeredTime: row.registered_at })
+      ),
+    };
+  }
+
+  async resolutionMaterial(did: string): Promise<string | null> {
+    const row = await this.first<{ long_form: string }>(
+      "SELECT long_form FROM replica_accounts WHERE did = ? " +
+        "UNION ALL SELECT long_form FROM replicas WHERE replica_did = ?",
+      [did, did]
+    );
+    return row?.long_form ?? null;
   }
 
   /*
